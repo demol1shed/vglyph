@@ -1,0 +1,24 @@
+{
+  "name": "vglyph",
+  "version-string": "0.0.0",
+  "license": "GPL-3.0-only",
+  "dependencies": [
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": ["avcodec", "avformat", "swscale", "gpl", "x264"]
+    }
+  ],
+  "features": {
+    "gui": {
+      "description": "Desktop GUI (vglyph-gui)",
+      "dependencies": [
+        "sdl3",
+        {
+          "name": "imgui",
+          "features": ["sdl3-binding", "sdl3-renderer-binding"]
+        }
+      ]
+    }
+  }
+}
