@@ -30,7 +30,7 @@ endif()
 add_library(vglyph-core STATIC
   src/core/convert.cpp
   src/core/version.cpp)
-target_include_directories(vglyph-core PUBLIC include)
+target_include_directories(vglyph-core PUBLIC include PRIVATE src/core)
 target_link_libraries(vglyph-core PRIVATE vglyph-options)
 
 add_executable(vglyph src/cli/main.cpp)

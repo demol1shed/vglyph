@@ -6,18 +6,11 @@
 #include <cstddef>
 #include <string>
 
+#include "checked_math.hpp"
+
 namespace vglyph {
 
 namespace {
-
-// Moves to a shared header when Phase 2 needs it.
-[[nodiscard]] bool checked_mul(std::uint64_t a, std::uint64_t b, std::uint64_t& out) noexcept {
-    if (a != 0 && b > UINT64_MAX / a) {
-        return false;
-    }
-    out = a * b;
-    return true;
-}
 
 // False for NaN, since every comparison with NaN is false.
 [[nodiscard]] bool in_range(float v, float lo, float hi) noexcept { return v >= lo && v <= hi; }
