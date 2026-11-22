@@ -1,8 +1,10 @@
 #pragma once
 
-// Conversion configuration and grid sizing (SPEC sections 3.3, 4.1, 5.3).
+// Conversion configuration, grid sizing and the pixel-to-cell converter
+// (SPEC sections 3.3, 4, 5.3).
 
 #include <cstdint>
+#include <span>
 #include <string>
 
 #include "vglyph/error.hpp"
@@ -51,5 +53,18 @@ struct GridSize {
 // shrinks: a grid over the caps fails with LimitExceeded.
 [[nodiscard]] Result<GridSize> compute_grid(std::uint32_t src_w, std::uint32_t src_h,
                                             const ConvertConfig& config);
+
+// Converts a tightly packed RGB24 buffer, already scaled to the sampling grid
+// from compute_grid(), into `out` (SPEC sections 4.2, 4.3).
+//
+// `width` must equal config.target_cols. `height` is the number of grid rows
+// (Ascii) or twice that (HalfBlock, so it must be even); a non-zero
+// config.target_rows must match the resulting row count.
+//
+// On any error `out` is left untouched. On success `out.cells` is resized
+// only if the grid size changed, so repeated calls reuse one buffer and do
+// not allocate. `pts_us` and `duration_us` are the caller's to set.
+[[nodiscard]] Status convert(std::span<const std::uint8_t> rgb24, std::uint32_t width,
+                             std::uint32_t height, const ConvertConfig& config, AsciiFrame& out);
 
 }  // namespace vglyph
