@@ -29,6 +29,10 @@ jobs:
       BUILD_GUI: ${{ matrix.config == 'Debug' && 'OFF' || 'ON' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install FFmpeg development packages
+        run: >
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          libavformat-dev libavcodec-dev libswscale-dev libavutil-dev pkg-config
       - name: Configure
         run: >
           cmake -B build -G Ninja
@@ -47,15 +51,26 @@ jobs:
       fail-fast: false
       matrix:
         config: [Debug, Release]
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
-      # No vcpkg yet: FFmpeg is an optional `media` feature enabled in phase 2.
+      # FFmpeg comes from the runner's vcpkg through the `media` manifest
+      # feature; built packages are cached so only the first run is slow.
+      - name: Prepare vcpkg binary cache
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}\vcpkg-cache
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
       - name: Configure
         run: >
           cmake -B build -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.config }}
           -DVGLYPH_BUILD_GUI=ON
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          -DVCPKG_MANIFEST_FEATURES=media
       - name: Build
         run: cmake --build build
       - name: Test
