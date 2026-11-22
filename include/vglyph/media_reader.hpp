@@ -62,6 +62,15 @@ public:
     [[nodiscard]] Result<ReadStatus> read_frame(std::uint32_t width, std::uint32_t height,
                                                 VideoFrame& out);
 
+    // Repositions so that the next read_frame() returns the frame covering
+    // `target_us` (pts <= target < pts + duration), or EndOfStream when the
+    // target is past the last frame. Seeks to the nearest earlier keyframe,
+    // then decodes forward without scaling the skipped frames; where the
+    // container cannot seek (still images, some formats) it reopens the file
+    // and decodes forward from the start. A still image has one frame at 0.
+    // A negative target is InvalidArgument.
+    [[nodiscard]] Status seek_us(std::int64_t target_us);
+
 private:
     struct Impl;
     explicit MediaReader(std::unique_ptr<Impl> impl) noexcept;
