@@ -2,8 +2,10 @@
 
 #include <array>
 #include <cstddef>
+#include <limits>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "checked_math.hpp"
 #include "ffmpeg_error.hpp"
@@ -54,9 +56,12 @@ constexpr AVRational kMicros{1, 1'000'000};
 
 [[nodiscard]] bool valid_rate(AVRational r) noexcept { return r.num > 0 && r.den > 0; }
 
+constexpr std::int64_t kNoSkip = std::numeric_limits<std::int64_t>::min();
+
 }  // namespace
 
 struct MediaReader::Impl {
+    std::filesystem::path path;            // kept to reopen the file when a seek cannot be done
     ffmpeg::FormatCtx fmt;
     ffmpeg::CodecCtx dec;
     ffmpeg::FramePtr frame;
@@ -69,21 +74,25 @@ struct MediaReader::Impl {
     std::int64_t fallback_duration_us = 0; // 1 / frame rate, for frames without a duration
     std::int64_t next_pts_us = 0;          // end of the previous frame
     bool draining = false;                 // the decoder was told the input ended
+    std::int64_t skip_before_us = kNoSkip; // after a seek: drop frames ending at or before this
 
-    [[nodiscard]] Status open(const std::filesystem::path& path);
+    [[nodiscard]] Status open(const std::filesystem::path& file);
     [[nodiscard]] Result<ReadStatus> read_frame(std::uint32_t width, std::uint32_t height,
                                                 VideoFrame& out);
+    [[nodiscard]] Status seek_us(std::int64_t target_us);
 
 private:
     [[nodiscard]] std::int64_t to_us(std::int64_t ts) const noexcept {
         return av_rescale_q(ts, time_base, kMicros);
     }
-    [[nodiscard]] Result<ReadStatus> emit_frame(std::uint32_t width, std::uint32_t height,
-                                                std::uint64_t bytes, VideoFrame& out);
+    // True when the frame was scaled into `out`; false when a seek skipped it.
+    [[nodiscard]] Result<bool> emit_frame(std::uint32_t width, std::uint32_t height,
+                                          std::uint64_t bytes, VideoFrame& out);
 };
 
-Status MediaReader::Impl::open(const std::filesystem::path& path) {
-    const std::u8string u8 = path.u8string();
+Status MediaReader::Impl::open(const std::filesystem::path& file) {
+    path = file;
+    const std::u8string u8 = file.u8string();
     const std::string name(reinterpret_cast<const char*>(u8.data()), u8.size());
 
     // GIF delays are in centiseconds; FFmpeg replaces delays below min_delay
@@ -187,7 +196,14 @@ Result<ReadStatus> MediaReader::Impl::read_frame(std::uint32_t width, std::uint3
     for (;;) {
         int rc = avcodec_receive_frame(dec.get(), frame.get());
         if (rc == 0) {
-            return emit_frame(width, height, bytes, out);
+            const Result<bool> emitted = emit_frame(width, height, bytes, out);
+            if (const Error* error = emitted.error_if()) {
+                return *error;
+            }
+            if (*emitted.value_if()) {
+                return ReadStatus::Frame;
+            }
+            continue;  // skipped on the way to a seek target
         }
         if (rc == AVERROR_EOF) {
             return ReadStatus::EndOfStream;
@@ -225,11 +241,31 @@ Result<ReadStatus> MediaReader::Impl::read_frame(std::uint32_t width, std::uint3
     }
 }
 
-Result<ReadStatus> MediaReader::Impl::emit_frame(std::uint32_t width, std::uint32_t height,
-                                                  std::uint64_t bytes, VideoFrame& out) {
+Result<bool> MediaReader::Impl::emit_frame(std::uint32_t width, std::uint32_t height,
+                                           std::uint64_t bytes, VideoFrame& out) {
     const ffmpeg::FrameUnref release(frame.get());
     if (Status size = check_source_size(frame->width, frame->height); !size.ok()) {
         return size.error();  // the stream changed size mid-way
+    }
+
+    std::int64_t pts_us = next_pts_us;
+    if (frame->best_effort_timestamp != AV_NOPTS_VALUE) {
+        pts_us = to_us(frame->best_effort_timestamp - start_ts);
+    }
+    std::int64_t duration_us = frame->duration > 0 ? to_us(frame->duration) : fallback_duration_us;
+    if (info.media_kind == MediaKind::Image) {
+        pts_us = 0;
+        duration_us = 0;
+    }
+    next_pts_us = pts_us + duration_us;
+
+    // A frame without a duration covers just its own timestamp.
+    const std::int64_t end_us = pts_us + (duration_us > 0 ? duration_us : 1);
+    if (skip_before_us != kNoSkip) {
+        if (end_us <= skip_before_us) {
+            return false;
+        }
+        skip_before_us = kNoSkip;
     }
 
     // Reuses the context while the source and target sizes stay the same.
@@ -255,20 +291,41 @@ Result<ReadStatus> MediaReader::Impl::emit_frame(std::uint32_t width, std::uint3
         return make_error(ErrorCode::DecodeError, "sws_scale produced " + std::to_string(rows) +
                                                       " rows, expected " + std::to_string(height));
     }
-
-    std::int64_t pts_us = next_pts_us;
-    if (frame->best_effort_timestamp != AV_NOPTS_VALUE) {
-        pts_us = to_us(frame->best_effort_timestamp - start_ts);
-    }
-    std::int64_t duration_us = frame->duration > 0 ? to_us(frame->duration) : fallback_duration_us;
-    if (info.media_kind == MediaKind::Image) {
-        pts_us = 0;
-        duration_us = 0;
-    }
-    next_pts_us = pts_us + duration_us;
     out.pts_us = pts_us;
     out.duration_us = duration_us;
-    return ReadStatus::Frame;
+    return true;
+}
+
+Status MediaReader::Impl::seek_us(std::int64_t target_us) {
+    if (target_us < 0) {
+        return make_error(ErrorCode::InvalidArgument, "seek target must not be negative");
+    }
+
+    bool repositioned = false;
+    if (info.media_kind != MediaKind::Image) {
+        // Round down: rounding up could land on a keyframe just after the target.
+        const std::int64_t ts = av_rescale_q_rnd(target_us, kMicros, time_base, AV_ROUND_DOWN);
+        if (ts == std::numeric_limits<std::int64_t>::min() ||
+            ts > std::numeric_limits<std::int64_t>::max() - start_ts) {
+            return make_error(ErrorCode::InvalidArgument, "seek target is out of range");
+        }
+        // A failed seek leaves the demuxer where it was; the reopen below recovers.
+        repositioned = av_seek_frame(fmt.get(), video_index, ts + start_ts, AVSEEK_FLAG_BACKWARD) >= 0;
+        if (repositioned) {
+            avcodec_flush_buffers(dec.get());  // also clears the end-of-stream drain state
+            draining = false;
+        }
+    }
+    if (!repositioned) {
+        Impl fresh;
+        if (Status reopened = fresh.open(path); !reopened.ok()) {
+            return reopened;
+        }
+        *this = std::move(fresh);
+    }
+    skip_before_us = target_us;
+    next_pts_us = 0;
+    return Status::success();
 }
 
 MediaReader::MediaReader(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
@@ -290,5 +347,7 @@ Result<ReadStatus> MediaReader::read_frame(std::uint32_t width, std::uint32_t he
                                            VideoFrame& out) {
     return impl_->read_frame(width, height, out);
 }
+
+Status MediaReader::seek_us(std::int64_t target_us) { return impl_->seek_us(target_us); }
 
 }  // namespace vglyph
