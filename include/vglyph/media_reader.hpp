@@ -1,0 +1,71 @@
+#pragma once
+
+// FFmpeg-backed reader for photos, animated images and videos
+// (SPEC sections 3.4, 5). The header exposes no FFmpeg types.
+
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "vglyph/error.hpp"
+
+namespace vglyph {
+
+enum class MediaKind { Image, AnimatedImage, Video };
+
+struct MediaInfo {
+    MediaKind media_kind = MediaKind::Image;
+    std::uint32_t src_width = 0;
+    std::uint32_t src_height = 0;
+    std::string pixel_format_name;
+    std::string codec_name;
+    double avg_fps = 0.0;            // 0 for still images
+    std::int64_t duration_us = 0;    // 0 if unknown or a still image
+    bool has_audio = false;
+    int audio_stream_index = -1;     // v2 passthrough hook; no audio decoder is opened
+};
+
+// One decoded frame, scaled to the requested size as tightly packed RGB24.
+// The caller owns it and passes the same object to every read_frame() call:
+// `rgb24` is resized only when the requested size changes.
+struct VideoFrame {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::vector<std::uint8_t> rgb24;
+    std::int64_t pts_us = 0;       // relative to the stream start; 0 for still images
+    std::int64_t duration_us = 0;  // 0 for still images
+};
+
+enum class ReadStatus { Frame, EndOfStream };
+
+class MediaReader {
+public:
+    // Opens `path` and its best video stream. Fails with IoError (cannot open),
+    // UnsupportedFormat (not media, no video stream, no decoder) or
+    // LimitExceeded (source larger than the SPEC 5.3 caps).
+    [[nodiscard]] static Result<MediaReader> open(const std::filesystem::path& path);
+
+    MediaReader(MediaReader&&) noexcept;
+    MediaReader& operator=(MediaReader&&) noexcept;
+    MediaReader(const MediaReader&) = delete;
+    MediaReader& operator=(const MediaReader&) = delete;
+    ~MediaReader();
+
+    [[nodiscard]] const MediaInfo& info() const noexcept;
+
+    // Decodes the next frame and scales it (SWS_AREA) to width x height, which
+    // is normally GridSize::sample_w x sample_h. Returns EndOfStream, and keeps
+    // returning it, once every frame was read. A zero or oversized width/height
+    // is InvalidArgument and consumes no frame.
+    [[nodiscard]] Result<ReadStatus> read_frame(std::uint32_t width, std::uint32_t height,
+                                                VideoFrame& out);
+
+private:
+    struct Impl;
+    explicit MediaReader(std::unique_ptr<Impl> impl) noexcept;
+    std::unique_ptr<Impl> impl_;
+};
+
+}  // namespace vglyph
