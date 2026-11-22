@@ -283,4 +283,140 @@ VGLYPH_TEST(target_size_may_change_between_reads) {
     VGLYPH_CHECK(near(pixel(frame, 4, 4), kBlue, 40));
 }
 
+// ---- Seeking ------------------------------------------------------------------
+
+namespace {
+
+// Five 100 ms frames: red, green, blue, white, red.
+bool write_cfr_mp4(const fs::path& path) {
+    const auto frames = mp4_frames({0, 100, 200, 300, 400}, {100, 100, 100, 100, 100},
+                                   {kRed, kGreen, kBlue, kWhite, kRed}, 32, 32);
+    return fixture_ok(write_mp4(path, 32, 32, frames));
+}
+
+// Reads one frame after a seek and checks which frame it is.
+void expect_frame_at(MediaReader& reader, std::int64_t seek_us, std::int64_t pts_us,
+                     std::int64_t duration_us, Rgb color, int tolerance) {
+    VGLYPH_CHECK(reader.seek_us(seek_us).ok());
+    VideoFrame frame;
+    VGLYPH_CHECK(next(reader, 8, 8, frame) == ReadStatus::Frame);
+    if (frame.pts_us != pts_us || frame.duration_us != duration_us) {
+        vglyph_test::out("  seek %lld: got pts %lld dur %lld, want pts %lld dur %lld\n",
+                         static_cast<long long>(seek_us), static_cast<long long>(frame.pts_us),
+                         static_cast<long long>(frame.duration_us), static_cast<long long>(pts_us),
+                         static_cast<long long>(duration_us));
+    }
+    VGLYPH_CHECK(frame.pts_us == pts_us);
+    VGLYPH_CHECK(frame.duration_us == duration_us);
+    VGLYPH_CHECK(near(pixel(frame, 4, 4), color, tolerance));
+}
+
+}  // namespace
+
+VGLYPH_TEST(mp4_seek_returns_the_frame_covering_the_target) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    VGLYPH_CHECK(write_cfr_mp4(dir.file("cfr.mp4")));
+    std::optional<MediaReader> reader;
+    open_ok(dir.file("cfr.mp4"), reader);
+    if (!reader) {
+        return;
+    }
+    expect_frame_at(*reader, 250'000, 200'000, 100'000, kBlue, 40);   // inside a frame
+    expect_frame_at(*reader, 300'000, 300'000, 100'000, kWhite, 40);  // exactly on a frame start
+    expect_frame_at(*reader, 399'999, 300'000, 100'000, kWhite, 40);  // last microsecond of a frame
+    expect_frame_at(*reader, 0, 0, 100'000, kRed, 40);                // back to the start
+
+    // Reading on after a seek continues in order.
+    VideoFrame frame;
+    VGLYPH_CHECK(next(*reader, 8, 8, frame) == ReadStatus::Frame);
+    VGLYPH_CHECK(frame.pts_us == 100'000);
+}
+
+VGLYPH_TEST(mp4_seek_past_the_end_then_back_works) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    VGLYPH_CHECK(write_cfr_mp4(dir.file("cfr.mp4")));
+    std::optional<MediaReader> reader;
+    open_ok(dir.file("cfr.mp4"), reader);
+    if (!reader) {
+        return;
+    }
+    VideoFrame frame;
+    VGLYPH_CHECK(reader->seek_us(10'000'000).ok());
+    VGLYPH_CHECK(next(*reader, 8, 8, frame) == ReadStatus::EndOfStream);
+
+    // The decoder was drained; a seek must make it usable again.
+    expect_frame_at(*reader, 120'000, 100'000, 100'000, kGreen, 40);
+    while (next(*reader, 8, 8, frame) == ReadStatus::Frame) {
+    }
+    expect_frame_at(*reader, 0, 0, 100'000, kRed, 40);  // after reading to the end
+}
+
+VGLYPH_TEST(mp4_seek_respects_variable_frame_durations) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const auto frames = mp4_frames({0, 100, 150, 400}, {100, 50, 250, 100},
+                                   {kRed, kGreen, kBlue, kWhite}, 32, 32);
+    VGLYPH_CHECK(fixture_ok(write_mp4(dir.file("vfr.mp4"), 32, 32, frames)));
+    std::optional<MediaReader> reader;
+    open_ok(dir.file("vfr.mp4"), reader);
+    if (!reader) {
+        return;
+    }
+    expect_frame_at(*reader, 120'000, 100'000, 50'000, kGreen, 40);
+    expect_frame_at(*reader, 399'999, 150'000, 250'000, kBlue, 40);  // the long frame still covers it
+    expect_frame_at(*reader, 400'000, 400'000, 100'000, kWhite, 40);
+}
+
+VGLYPH_TEST(seek_rejects_a_negative_target) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    VGLYPH_CHECK(write_cfr_mp4(dir.file("cfr.mp4")));
+    std::optional<MediaReader> reader;
+    open_ok(dir.file("cfr.mp4"), reader);
+    if (!reader) {
+        return;
+    }
+    const vglyph::Status s = reader->seek_us(-1);
+    VGLYPH_CHECK(!s.ok() && s.error().code == ErrorCode::InvalidArgument);
+    VideoFrame frame;
+    VGLYPH_CHECK(next(*reader, 8, 8, frame) == ReadStatus::Frame);  // the reader is untouched
+    VGLYPH_CHECK(frame.pts_us == 0);
+}
+
+VGLYPH_TEST(gif_seek_returns_the_frame_covering_the_target) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const std::vector<GifFrame> gif_frames{{0, 20}, {1, 0}, {2, 5}};  // [0,200) [200,300) [300,350) ms
+    VGLYPH_CHECK(write_file(dir.file("a.gif"),
+                            make_gif(4, 4, {kRed, kGreen, kBlue, kWhite}, gif_frames)));
+    std::optional<MediaReader> reader;
+    open_ok(dir.file("a.gif"), reader);
+    if (!reader) {
+        return;
+    }
+    expect_frame_at(*reader, 250'000, 200'000, 100'000, kGreen, 2);
+    expect_frame_at(*reader, 340'000, 300'000, 50'000, kBlue, 2);
+    expect_frame_at(*reader, 0, 0, 200'000, kRed, 2);
+}
+
+VGLYPH_TEST(png_seek_starts_over_from_the_beginning) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    VGLYPH_CHECK(fixture_ok(write_png(dir.file("a.png"), 4, 4, solid_rgb(4, 4, kRed))));
+    std::optional<MediaReader> reader;
+    open_ok(dir.file("a.png"), reader);
+    if (!reader) {
+        return;
+    }
+    VideoFrame frame;
+    VGLYPH_CHECK(next(*reader, 2, 2, frame) == ReadStatus::Frame);
+    VGLYPH_CHECK(next(*reader, 2, 2, frame) == ReadStatus::EndOfStream);
+    expect_frame_at(*reader, 0, 0, 0, kRed, 2);  // reopened; the single frame is back
+    VGLYPH_CHECK(next(*reader, 8, 8, frame) == ReadStatus::EndOfStream);
+    VGLYPH_CHECK(reader->seek_us(1).ok());  // a still has nothing at 1 us
+    VGLYPH_CHECK(next(*reader, 2, 2, frame) == ReadStatus::EndOfStream);
+}
+
 VGLYPH_TEST_MAIN()
