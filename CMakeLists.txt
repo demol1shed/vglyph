@@ -55,3 +55,4 @@ function(add_vglyph_test name)
 endfunction()
 
 add_vglyph_test(error)
+add_vglyph_test(grid)
