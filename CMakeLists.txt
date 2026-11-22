@@ -56,3 +56,4 @@ endfunction()
 
 add_vglyph_test(error)
 add_vglyph_test(grid)
+add_vglyph_test(convert)
