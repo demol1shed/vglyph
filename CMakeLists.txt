@@ -27,11 +27,28 @@ else()
   endif()
 endif()
 
+# FFmpeg: vcpkg (Windows CI, `media` feature) or the system packages through
+# pkg-config (Linux). Exposed as one INTERFACE target; headers are SYSTEM so
+# -Werror never applies to them.
+add_library(vglyph-ffmpeg INTERFACE)
+if(VCPKG_TOOLCHAIN)
+  find_package(FFMPEG REQUIRED)
+  target_include_directories(vglyph-ffmpeg SYSTEM INTERFACE ${FFMPEG_INCLUDE_DIRS})
+  target_link_directories(vglyph-ffmpeg INTERFACE ${FFMPEG_LIBRARY_DIRS})
+  target_link_libraries(vglyph-ffmpeg INTERFACE ${FFMPEG_LIBRARIES})
+else()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
+    libavformat libavcodec libswscale libavutil)
+  target_link_libraries(vglyph-ffmpeg INTERFACE PkgConfig::FFMPEG)
+endif()
+
 add_library(vglyph-core STATIC
   src/core/convert.cpp
-  src/core/version.cpp)
-target_include_directories(vglyph-core PUBLIC include PRIVATE src/core)
-target_link_libraries(vglyph-core PRIVATE vglyph-options)
+  src/core/version.cpp
+  src/media/ffmpeg_error.cpp)
+target_include_directories(vglyph-core PUBLIC include PRIVATE src/core src/media)
+target_link_libraries(vglyph-core PRIVATE vglyph-options vglyph-ffmpeg)
 
 add_executable(vglyph src/cli/main.cpp)
 target_link_libraries(vglyph PRIVATE vglyph-core vglyph-options)
@@ -57,3 +74,7 @@ endfunction()
 add_vglyph_test(error)
 add_vglyph_test(grid)
 add_vglyph_test(convert)
+
+# Tests of internal (non-installed) headers need the private include dirs.
+add_vglyph_test(ffmpeg_error)
+target_include_directories(vglyph-ffmpeg_error-test PRIVATE src/media)
