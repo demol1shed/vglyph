@@ -44,3 +44,12 @@ enable_testing()
 add_executable(vglyph-smoke-test tests/smoke_test.cpp)
 target_link_libraries(vglyph-smoke-test PRIVATE vglyph-core vglyph-options)
 add_test(NAME smoke COMMAND vglyph-smoke-test)
+
+# Registers tests/<name>_test.cpp as the CTest test "<name>".
+function(add_vglyph_test name)
+  add_executable(vglyph-${name}-test tests/${name}_test.cpp)
+  target_link_libraries(vglyph-${name}-test PRIVATE vglyph-core vglyph-options)
+  add_test(NAME ${name} COMMAND vglyph-${name}-test)
+endfunction()
+
+add_vglyph_test(error)
