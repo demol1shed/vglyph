@@ -126,11 +126,16 @@ After coding and test runs for a phase are complete, present a concise **Self-Au
 
 ## 6. Phase Tracking
 
-- **Current Phase:** Phase 2 (FFmpeg Media Reader)
+- **Current Phase:** Phase 3 (Text Serialization and `vglyph` CLI)
 - **Completed Phases:** Phase 0 (Project Skeleton and Build Gate): verified locally and in CI (Linux GCC/Clang with ASan+UBSan, Windows MSVC).
   Phase 1 (Error Model and Core Conversion Engine): verified locally and in CI (Linux GCC/Clang with ASan+UBSan, Windows MSVC); merged in PRs #5, #6 and #7.
-- **Carry-over from Phase 0:**
-  - `vcpkg.json` feature names (`sdl3-binding`, `sdl3-renderer-binding`, the `ffmpeg` features) are unverified; confirm them when the `media` feature is enabled in Phase 2 and the `gui` feature in Phase 6.
+  Phase 2 (FFmpeg Media Reader): verified locally and in CI (Linux GCC/Clang with ASan+UBSan, Windows MSVC); merged in PRs #9, #10 and #11.
+- **Carry-over:**
+  - `vcpkg.json`: the `ffmpeg` features (`avcodec`, `avformat`, `swscale`, `zlib`, `gpl`, `x264`) are verified on Windows CI. The `gui` feature names (`sdl3-binding`, `sdl3-renderer-binding`) are still unverified; confirm them in Phase 6.
+  - vcpkg builds FFmpeg with `--disable-autodetect`, so every optional library needs its vcpkg feature (`zlib` is required for PNG). `webp` is not enabled, so WebP is unreadable on Windows; decide before v1.0 (SPEC 1.2 lists WebP). Linux CI uses Ubuntu's FFmpeg 6.1, Windows CI vcpkg's FFmpeg 9.0.2: use only non-deprecated FFmpeg API.
+  - Phase 3: FFmpeg writes its own diagnostics to stderr through `av_log`; the CLI must set the log level so SPEC 8.3's stream contract holds.
+  - Alpha is dropped by the RGB24 conversion instead of being composited over `bg_color`; settle it with the exporters in Phase 4.
+  - The 64 MP source pixel cap (`kMaxSourcePixels`) is enforced in `MediaReader` but has no test, since it needs a ~200 MB image.
 
 ---
 
