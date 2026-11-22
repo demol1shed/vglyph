@@ -13,7 +13,7 @@ A fast, minimal, cross-platform ASCII art converter and player for photos, anima
 - **Desktop GUI:** a lightweight SDL3 + Dear ImGui front end with live preview and non-blocking export.
 - **Lean engineering:** C++20 without exceptions or RTTI, RAII around every C API, bounded streaming memory, and bit-identical output between CLI and GUI.
 
-Platforms: Linux (x86_64 / aarch64) and Windows 11 (x86_64).
+Platforms: Linux (x86_64 / aarch64) and Windows 11 (x86_64). A TrueColor (24-bit) terminal is required for `vglyph play` and `.ans` output; there is no 256-color fallback.
 
 ## Planned CLI
 
