@@ -79,3 +79,8 @@ add_vglyph_test(convert)
 # Tests of internal (non-installed) headers need the private include dirs.
 add_vglyph_test(ffmpeg_error)
 target_include_directories(vglyph-ffmpeg_error-test PRIVATE src/media)
+
+# Builds fixtures with FFmpeg's encoders, so it needs FFmpeg's headers directly.
+add_vglyph_test(media_reader)
+target_include_directories(vglyph-media_reader-test PRIVATE src/media)
+target_link_libraries(vglyph-media_reader-test PRIVATE vglyph-ffmpeg)
