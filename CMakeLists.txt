@@ -46,7 +46,8 @@ endif()
 add_library(vglyph-core STATIC
   src/core/convert.cpp
   src/core/version.cpp
-  src/media/ffmpeg_error.cpp)
+  src/media/ffmpeg_error.cpp
+  src/media/media_reader.cpp)
 target_include_directories(vglyph-core PUBLIC include PRIVATE src/core src/media)
 target_link_libraries(vglyph-core PRIVATE vglyph-options vglyph-ffmpeg)
 
