@@ -126,8 +126,11 @@ After coding and test runs for a phase are complete, present a concise **Self-Au
 
 ## 6. Phase Tracking
 
-- **Current Phase:** Phase 0 (Project Skeleton and Build Gate)
-- **Completed Phases:** None yet.
+- **Current Phase:** Phase 1 (Error Model and Core Conversion Engine)
+- **Completed Phases:** Phase 0 (Project Skeleton and Build Gate): verified locally and in CI (Linux GCC/Clang with ASan+UBSan, Windows MSVC).
+- **Carry-over from Phase 0:**
+  - `tests/test_framework.hpp` discards `std::printf` return values with `(void)`, which violates Section 2.4 (console I/O results must not be ignored). Fix it in the first Phase 1 PR: a failed write must make the test runner exit non-zero.
+  - `vcpkg.json` feature names (`sdl3-binding`, `sdl3-renderer-binding`, the `ffmpeg` features) are unverified; confirm them when the `media` feature is enabled in Phase 2 and the `gui` feature in Phase 6.
 
 ---
 
