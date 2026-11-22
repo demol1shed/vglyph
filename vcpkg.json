@@ -9,7 +9,7 @@
         {
           "name": "ffmpeg",
           "default-features": false,
-          "features": ["avcodec", "avformat", "swscale", "gpl", "x264"]
+          "features": ["avcodec", "avformat", "swscale", "zlib", "gpl", "x264"]
         }
       ]
     },
