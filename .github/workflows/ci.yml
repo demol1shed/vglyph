@@ -75,3 +75,39 @@ jobs:
         run: cmake --build build
       - name: Test
         run: ctest --test-dir build --output-on-failure
+      # The interactive player needs a real console, which a runner does not
+      # have. This covers what it can: a UTF-8 file name through argv, info and
+      # convert on that file, and play refusing to start without a console.
+      - name: CLI smoke test
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $name = "g" + [char]0x00FC + [char]0x015F + [char]0x011F + ".png"
+          $png = Join-Path $env:RUNNER_TEMP $name
+          $bmp = New-Object System.Drawing.Bitmap 16, 16
+          $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+          $gfx.Clear([System.Drawing.Color]::White)
+          $bmp.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
+          $gfx.Dispose(); $bmp.Dispose()
+
+          $exe = Join-Path $PWD "build/vglyph.exe"
+          $failed = $false
+          function Check($ok, $what) {
+            if ($ok) { Write-Host "ok: $what" } else { Write-Host "FAILED: $what"; $script:failed = $true }
+          }
+
+          $info = (& $exe info $png) -join "`n"
+          Check ($LASTEXITCODE -eq 0 -and $info -match "width: 16") "info on a UTF-8 file name"
+
+          $out = Join-Path $env:RUNNER_TEMP ("o" + [char]0x00E7 + ".txt")
+          & $exe convert $png -o $out -w 8 --format txt
+          Check ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 8) "convert to a UTF-8 file name"
+
+          & $exe convert $png -o - -w 8 | Out-Null
+          Check ($LASTEXITCODE -eq 0) "convert to stdout"
+
+          & $exe play $png 2>$null
+          Check ($LASTEXITCODE -eq 2) "play without a console exits 2 (got $LASTEXITCODE)"
+
+          # The shell would otherwise exit with the last native exit code (play's 2).
+          if ($failed) { exit 1 } else { exit 0 }
