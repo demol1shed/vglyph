@@ -77,6 +77,8 @@ endfunction()
 add_vglyph_test(error)
 add_vglyph_test(grid)
 add_vglyph_test(convert)
+add_vglyph_test(utf8)
+add_vglyph_test(text_serializer)
 
 # Tests of internal (non-installed) headers need the private include dirs.
 add_vglyph_test(ffmpeg_error)
