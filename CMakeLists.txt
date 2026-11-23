@@ -48,7 +48,8 @@ add_library(vglyph-core STATIC
   src/core/utf8.cpp
   src/core/version.cpp
   src/media/ffmpeg_error.cpp
-  src/media/media_reader.cpp)
+  src/media/media_reader.cpp
+  src/render/text_serializer.cpp)
 target_include_directories(vglyph-core PUBLIC include PRIVATE src/core src/media)
 target_link_libraries(vglyph-core PRIVATE vglyph-options vglyph-ffmpeg)
 
