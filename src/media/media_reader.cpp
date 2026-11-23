@@ -58,6 +58,11 @@ constexpr AVRational kMicros{1, 1'000'000};
 
 constexpr std::int64_t kNoSkip = std::numeric_limits<std::int64_t>::min();
 
+// Browsers show a GIF delay of 10 ms or less (a legacy quirk: authors meant
+// "as fast as possible") as 100 ms; SPEC 5.2 asks for the same.
+constexpr std::int64_t kGifMaxQuirkDelayUs = 10'000;
+constexpr std::int64_t kGifDefaultDelayUs = 100'000;
+
 }  // namespace
 
 struct MediaReader::Impl {
@@ -73,6 +78,7 @@ struct MediaReader::Impl {
     std::int64_t start_ts = 0;             // stream start, in time_base units
     std::int64_t fallback_duration_us = 0; // 1 / frame rate, for frames without a duration
     std::int64_t next_pts_us = 0;          // end of the previous frame
+    bool is_gif = false;                   // frame times come from the clamped delays, not the demuxer
     bool draining = false;                 // the decoder was told the input ended
     std::int64_t skip_before_us = kNoSkip; // after a seek: drop frames ending at or before this
 
@@ -95,9 +101,9 @@ Status MediaReader::Impl::open(const std::filesystem::path& file) {
     const std::u8string u8 = file.u8string();
     const std::string name(reinterpret_cast<const char*>(u8.data()), u8.size());
 
-    // GIF delays are in centiseconds; FFmpeg replaces delays below min_delay
-    // with default_delay. min_delay=1 limits that to the 0 cs quirk, giving
-    // SPEC 5.2's "sub-10 ms becomes 100 ms". Other demuxers ignore the option.
+    // GIF delays are in centiseconds; FFmpeg replaces a 0 cs delay with
+    // default_delay (100 ms) but passes 1 cs through, so emit_frame clamps
+    // the rest. Other demuxers ignore the option.
     AVDictionary* raw_opts = nullptr;
     int rc = av_dict_set(&raw_opts, "min_delay", "1", 0);
     if (rc < 0) {
@@ -129,6 +135,7 @@ Status MediaReader::Impl::open(const std::filesystem::path& file) {
     }
 
     info.media_kind = classify(fmt->iformat->name);
+    is_gif = std::string_view(fmt->iformat->name) == "gif";
     info.src_width = static_cast<std::uint32_t>(par->width);
     info.src_height = static_cast<std::uint32_t>(par->height);
     const char* pix_name = av_get_pix_fmt_name(static_cast<AVPixelFormat>(par->format));
@@ -144,6 +151,9 @@ Status MediaReader::Impl::open(const std::filesystem::path& file) {
             info.avg_fps = av_q2d(rate);
             fallback_duration_us = av_rescale_q(1, av_inv_q(rate), kMicros);
         }
+        // shortcut: avg_fps and duration_us come from the container, so a GIF with
+        // 10 ms delays reports 100 fps and a duration 10x too short; the real
+        // values need a scan of every frame, upgrade if the GUI shows them.
         if (fmt->duration != AV_NOPTS_VALUE && fmt->duration > 0) {
             info.duration_us = fmt->duration;
         }
@@ -249,10 +259,16 @@ Result<bool> MediaReader::Impl::emit_frame(std::uint32_t width, std::uint32_t he
     }
 
     std::int64_t pts_us = next_pts_us;
-    if (frame->best_effort_timestamp != AV_NOPTS_VALUE) {
+    // A GIF's frames are back to back, so its timeline is the sum of the clamped
+    // delays; the demuxer's timestamps would still advance by 10 ms per frame.
+    // (Its seek always restarts at the first frame, where next_pts_us is 0.)
+    if (!is_gif && frame->best_effort_timestamp != AV_NOPTS_VALUE) {
         pts_us = to_us(frame->best_effort_timestamp - start_ts);
     }
     std::int64_t duration_us = frame->duration > 0 ? to_us(frame->duration) : fallback_duration_us;
+    if (is_gif && duration_us <= kGifMaxQuirkDelayUs) {
+        duration_us = kGifDefaultDelayUs;
+    }
     if (info.media_kind == MediaKind::Image) {
         pts_us = 0;
         duration_us = 0;
