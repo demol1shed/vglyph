@@ -57,7 +57,8 @@ target_link_libraries(vglyph-core PRIVATE vglyph-options vglyph-ffmpeg)
 # platform_*.cpp are the only files that include OS console headers.
 add_library(vglyph-cli-impl STATIC
   src/cli/args.cpp
-  src/cli/commands.cpp)
+  src/cli/commands.cpp
+  src/cli/player.cpp)
 if(WIN32)
   target_sources(vglyph-cli-impl PRIVATE src/cli/platform_win32.cpp)
 else()
