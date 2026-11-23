@@ -328,6 +328,8 @@ Status MediaReader::Impl::seek_us(std::int64_t target_us) {
     return Status::success();
 }
 
+void set_media_log_quiet() noexcept { av_log_set_level(AV_LOG_QUIET); }
+
 MediaReader::MediaReader(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
 MediaReader::MediaReader(MediaReader&&) noexcept = default;
 MediaReader& MediaReader::operator=(MediaReader&&) noexcept = default;

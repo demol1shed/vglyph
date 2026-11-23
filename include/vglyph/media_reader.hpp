@@ -13,6 +13,11 @@
 
 namespace vglyph {
 
+// Silences FFmpeg's own diagnostics (written to stderr by av_log). Errors
+// still reach the caller through Error::detail, so an application that owns
+// the terminal or must keep stderr clean calls this once at startup.
+void set_media_log_quiet() noexcept;
+
 enum class MediaKind { Image, AnimatedImage, Video };
 
 struct MediaInfo {
