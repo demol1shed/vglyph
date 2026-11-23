@@ -105,3 +105,12 @@ target_include_directories(vglyph-ffmpeg_error-test PRIVATE src/media)
 add_vglyph_test(media_reader)
 target_include_directories(vglyph-media_reader-test PRIVATE src/media)
 target_link_libraries(vglyph-media_reader-test PRIVATE vglyph-ffmpeg)
+
+# CLI tests link the CLI library (which brings in its own include directory).
+add_vglyph_test(cli_args)
+target_link_libraries(vglyph-cli_args-test PRIVATE vglyph-cli-impl)
+
+# Writes fixtures with FFmpeg's encoders, like the media_reader test.
+add_vglyph_test(cli_convert)
+target_include_directories(vglyph-cli_convert-test PRIVATE src/media)
+target_link_libraries(vglyph-cli_convert-test PRIVATE vglyph-cli-impl vglyph-ffmpeg)
