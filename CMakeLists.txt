@@ -43,7 +43,19 @@ else()
   target_link_libraries(vglyph-ffmpeg INTERFACE PkgConfig::FFMPEG)
 endif()
 
+# The default font is embedded as a generated header (SPEC 7.1), so a build
+# needs no font file at run time.
+set(VGLYPH_FONT_FILE ${CMAKE_SOURCE_DIR}/assets/fonts/JetBrainsMono-Regular.ttf)
+set(VGLYPH_FONT_HEADER ${CMAKE_BINARY_DIR}/generated/vglyph_embedded_font.hpp)
+add_custom_command(
+  OUTPUT ${VGLYPH_FONT_HEADER}
+  COMMAND ${CMAKE_COMMAND} -DINPUT=${VGLYPH_FONT_FILE} -DOUTPUT=${VGLYPH_FONT_HEADER}
+          -P ${CMAKE_SOURCE_DIR}/cmake/embed_file.cmake
+  DEPENDS ${VGLYPH_FONT_FILE} ${CMAKE_SOURCE_DIR}/cmake/embed_file.cmake
+  COMMENT "Embedding the default font")
+
 add_library(vglyph-core STATIC
+  ${VGLYPH_FONT_HEADER}
   src/core/convert.cpp
   src/core/utf8.cpp
   src/core/version.cpp
