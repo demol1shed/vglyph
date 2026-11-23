@@ -12,7 +12,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # Shared compile options for every vglyph target (no exceptions, no RTTI).
 add_library(vglyph-options INTERFACE)
 if(MSVC)
-  target_compile_options(vglyph-options INTERFACE /W4 /WX /EHs-c- /GR-)
+  # /external:W0 silences SYSTEM headers (FFmpeg, third_party) under /W4 /WX.
+  target_compile_options(vglyph-options INTERFACE /W4 /WX /EHs-c- /GR- /external:W0)
   target_compile_definitions(vglyph-options INTERFACE _HAS_EXCEPTIONS=0)
 else()
   target_compile_options(vglyph-options INTERFACE
@@ -61,9 +62,18 @@ add_library(vglyph-core STATIC
   src/core/version.cpp
   src/media/ffmpeg_error.cpp
   src/media/media_reader.cpp
+  src/render/glyph_atlas.cpp
+  src/render/rasterizer.cpp
   src/render/text_serializer.cpp)
 target_include_directories(vglyph-core PUBLIC include PRIVATE src/core src/media)
+# Vendored single headers are SYSTEM, so -Werror never applies to them.
+target_include_directories(vglyph-core SYSTEM PRIVATE third_party)
+target_include_directories(vglyph-core PRIVATE ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(vglyph-core PRIVATE vglyph-options vglyph-ffmpeg)
+if(MSVC)
+  # stb_truetype.h has non-ASCII characters in two comments.
+  set_source_files_properties(src/render/glyph_atlas.cpp PROPERTIES COMPILE_OPTIONS /utf-8)
+endif()
 
 # CLI logic as a static library so the tests can link it; main.cpp stays tiny.
 # platform_*.cpp are the only files that include OS console headers.
