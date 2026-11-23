@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 
+#include "args.hpp"
 #include "vglyph/convert.hpp"
 #include "vglyph/error.hpp"
 #include "vglyph/frame.hpp"
@@ -46,5 +47,12 @@ private:
     std::uint32_t cols_ = 0;
     std::uint32_t rows_ = 0;
 };
+
+// Plays options.input in the terminal (`vglyph play`): until the media ends,
+// or until the user quits with q / Esc (a photo waits for that). Space pauses,
+// l toggles looping. The terminal is restored before this returns. Returns
+// Cancelled after SIGINT / SIGTERM / Ctrl+C, InvalidArgument when stdin or
+// stdout is not a terminal.
+[[nodiscard]] Status run_play(const CliOptions& options);
 
 }  // namespace vglyph::cli

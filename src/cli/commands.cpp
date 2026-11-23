@@ -9,6 +9,7 @@
 #include <string>
 
 #include "platform.hpp"
+#include "player.hpp"
 #include "vglyph/convert.hpp"
 #include "vglyph/frame.hpp"
 #include "vglyph/text_serializer.hpp"
@@ -193,11 +194,14 @@ int run(std::span<const std::string_view> args) {
             result = run_convert(*options);
             break;
         case Command::Play:
-            result = make_error(ErrorCode::InvalidArgument, "the play command is not implemented yet");
+            result = run_play(*options);
             break;
     }
     if (!result.ok()) {
-        report(result.error());
+        // A user interrupt (Ctrl+C) is not an error worth printing.
+        if (result.error().code != ErrorCode::Cancelled) {
+            report(result.error());
+        }
         return exit_code(result.error().code);
     }
     return 0;
