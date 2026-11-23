@@ -419,4 +419,10 @@ VGLYPH_TEST(png_seek_starts_over_from_the_beginning) {
     VGLYPH_CHECK(next(*reader, 2, 2, frame) == ReadStatus::EndOfStream);
 }
 
+VGLYPH_TEST(set_media_log_quiet_silences_ffmpeg) {
+    av_log_set_level(AV_LOG_INFO);
+    vglyph::set_media_log_quiet();
+    VGLYPH_CHECK(av_log_get_level() == AV_LOG_QUIET);
+}
+
 VGLYPH_TEST_MAIN()
