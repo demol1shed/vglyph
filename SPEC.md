@@ -163,7 +163,7 @@ If `invert == true`, luminance becomes $Y' = 1 - Y$.
 ### 5.2 Frame Timing & Seeking
 - Convert packet/frame `pts` and `duration` from stream `time_base` to microseconds using `av_rescale_q`.
 - If a frame lacks a valid duration (common in some MP4/WebM files), fall back to the delta between consecutive PTS values or `1 / avg_fps`; for single-frame images, `pts_us = 0`, `duration_us = 0`.
-- For animated GIFs with zero-delay frames (legacy GIF quirk), clamp sub-10ms delays to a sensible default (`100ms` / 10 FPS) matching browser/player conventions.
+- For animated GIFs with zero-delay frames (legacy GIF quirk), clamp delays of 10ms or less to a sensible default (`100ms` / 10 FPS), exactly as browsers do (FFmpeg itself only replaces a 0cs delay, so the reader clamps the rest and builds the GIF timeline from the clamped delays).
 - `seek_us(int64_t target_us)` performs keyframe seek (`av_seek_frame` with `AVSEEK_FLAG_BACKWARD`), flushes codec buffers (`avcodec_flush_buffers`), and decodes forward cleanly to the requested timestamp for GUI scrubbing.
 
 ### 5.3 Input Safety Limits
