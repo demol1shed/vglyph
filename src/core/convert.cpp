@@ -15,6 +15,19 @@ namespace {
 // False for NaN, since every comparison with NaN is false.
 [[nodiscard]] bool in_range(float v, float lo, float hi) noexcept { return v >= lo && v <= hi; }
 
+// Charset glyphs end up in .ans files and on the terminal, so C0/C1 controls
+// (including ESC) must never get through. Surrogates and values past U+10FFFF
+// are not Unicode scalar values.
+[[nodiscard]] bool is_printable_codepoint(char32_t c) noexcept {
+    if (c < 0x20 || (c >= 0x7F && c <= 0x9F)) {
+        return false;
+    }
+    if (c >= 0xD800 && c <= 0xDFFF) {
+        return false;
+    }
+    return c <= 0x10FFFF;
+}
+
 [[nodiscard]] Error invalid(const char* field, const char* range) {
     return make_error(ErrorCode::InvalidArgument,
                       std::string(field) + " must be in " + range);
@@ -148,6 +161,12 @@ Status validate(const ConvertConfig& config) {
     }
     if (config.charset.size() < 2) {
         return make_error(ErrorCode::InvalidArgument, "charset must have at least 2 codepoints");
+    }
+    for (const char32_t c : config.charset) {
+        if (!is_printable_codepoint(c)) {
+            return make_error(ErrorCode::InvalidArgument,
+                              "charset contains a control, surrogate or out-of-range codepoint");
+        }
     }
     return Status::success();
 }
