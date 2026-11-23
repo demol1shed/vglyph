@@ -115,3 +115,7 @@ target_link_libraries(vglyph-cli_args-test PRIVATE vglyph-cli-impl)
 add_vglyph_test(cli_convert)
 target_include_directories(vglyph-cli_convert-test PRIVATE src/media)
 target_link_libraries(vglyph-cli_convert-test PRIVATE vglyph-cli-impl vglyph-ffmpeg)
+
+# Replaces the global operator new to count allocations in the frame hot path.
+add_vglyph_test(player)
+target_link_libraries(vglyph-player-test PRIVATE vglyph-cli-impl)
