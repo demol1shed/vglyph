@@ -120,6 +120,9 @@ add_vglyph_test(convert)
 add_vglyph_test(utf8)
 add_vglyph_test(text_serializer)
 
+# Replaces the global operator new to count allocations in the rasterizer loop.
+add_vglyph_test(rasterizer)
+
 # Tests of internal (non-installed) headers need the private include dirs.
 add_vglyph_test(ffmpeg_error)
 target_include_directories(vglyph-ffmpeg_error-test PRIVATE src/media)
