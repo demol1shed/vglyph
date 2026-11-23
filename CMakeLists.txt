@@ -54,13 +54,23 @@ target_include_directories(vglyph-core PUBLIC include PRIVATE src/core src/media
 target_link_libraries(vglyph-core PRIVATE vglyph-options vglyph-ffmpeg)
 
 # CLI logic as a static library so the tests can link it; main.cpp stays tiny.
+# platform_*.cpp are the only files that include OS console headers.
 add_library(vglyph-cli-impl STATIC
   src/cli/args.cpp)
+if(WIN32)
+  target_sources(vglyph-cli-impl PRIVATE src/cli/platform_win32.cpp)
+else()
+  target_sources(vglyph-cli-impl PRIVATE src/cli/platform_posix.cpp)
+endif()
 target_include_directories(vglyph-cli-impl PUBLIC src/cli)
 target_link_libraries(vglyph-cli-impl PUBLIC vglyph-core PRIVATE vglyph-options)
 
 add_executable(vglyph src/cli/main.cpp)
 target_link_libraries(vglyph PRIVATE vglyph-core vglyph-options)
+if(MSVC)
+  # UTF-8 active code page: argv and file names arrive as UTF-8 on Windows.
+  target_sources(vglyph PRIVATE src/cli/vglyph.manifest)
+endif()
 
 if(VGLYPH_BUILD_GUI)
   # Phase 0 stub: SDL3 / Dear ImGui are linked in Phase 6.
