@@ -256,7 +256,8 @@ Status Player::run() {
     const bool still = reader_.info().media_kind == MediaKind::Image;
 
     for (;;) {
-        const Result<ReadStatus> read = reader_.read_frame(grid_.sample_w, grid_.sample_h, video_);
+        const Result<ReadStatus> read =
+            reader_.read_frame(grid_.sample_w, grid_.sample_h, video_, config_.bg_color);
         const ReadStatus* status = read.value_if();
         if (status == nullptr) {
             return *read.error_if();

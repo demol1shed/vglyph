@@ -133,7 +133,8 @@ Status convert_frame(const CliOptions& options, std::string& out) {
 
     VideoFrame video;
     for (std::uint64_t index = 0;; ++index) {
-        const Result<ReadStatus> read = reader->read_frame(size->sample_w, size->sample_h, video);
+        const Result<ReadStatus> read =
+            reader->read_frame(size->sample_w, size->sample_h, video, options.config.bg_color);
         const ReadStatus* status = read.value_if();
         if (status == nullptr) {
             return *read.error_if();

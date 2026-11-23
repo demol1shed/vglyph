@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "checked_math.hpp"
 #include "ffmpeg_error.hpp"
@@ -63,6 +64,22 @@ constexpr std::int64_t kNoSkip = std::numeric_limits<std::int64_t>::min();
 constexpr std::int64_t kGifMaxQuirkDelayUs = 10'000;
 constexpr std::int64_t kGifDefaultDelayUs = 100'000;
 
+// Blends straight (non-premultiplied) RGBA pixels over `bg`, in place. Only the
+// color bytes change; the alpha byte is left for the RGB0 reader to ignore.
+void blend_over(std::uint8_t* rgba, std::size_t pixels, Rgb bg) noexcept {
+    const std::array<int, 3> back{bg.r, bg.g, bg.b};
+    for (std::size_t i = 0; i < pixels; ++i) {
+        std::uint8_t* p = rgba + i * 4;
+        const int alpha = p[3];
+        if (alpha == 255) {
+            continue;
+        }
+        for (std::size_t c = 0; c < 3; ++c) {
+            p[c] = static_cast<std::uint8_t>((p[c] * alpha + back[c] * (255 - alpha) + 127) / 255);
+        }
+    }
+}
+
 }  // namespace
 
 struct MediaReader::Impl {
@@ -71,7 +88,9 @@ struct MediaReader::Impl {
     ffmpeg::CodecCtx dec;
     ffmpeg::FramePtr frame;
     ffmpeg::PacketPtr pkt;
-    ffmpeg::SwsPtr sws;
+    ffmpeg::SwsPtr sws;                    // source -> RGB24, or -> RGBA for an alpha source
+    ffmpeg::SwsPtr sws_alpha;              // composited RGBA (as RGB0) -> RGB24 at the target size
+    std::vector<std::uint8_t> rgba;        // alpha source at source size; resized only when that changes
     MediaInfo info;
     int video_index = -1;
     AVRational time_base{1, 1};
@@ -84,7 +103,7 @@ struct MediaReader::Impl {
 
     [[nodiscard]] Status open(const std::filesystem::path& file);
     [[nodiscard]] Result<ReadStatus> read_frame(std::uint32_t width, std::uint32_t height,
-                                                VideoFrame& out);
+                                                VideoFrame& out, Rgb background);
     [[nodiscard]] Status seek_us(std::int64_t target_us);
 
 private:
@@ -93,7 +112,9 @@ private:
     }
     // True when the frame was scaled into `out`; false when a seek skipped it.
     [[nodiscard]] Result<bool> emit_frame(std::uint32_t width, std::uint32_t height,
-                                          std::uint64_t bytes, VideoFrame& out);
+                                          std::uint64_t bytes, VideoFrame& out, Rgb background);
+    // Converts the current frame to RGBA at its own size into `rgba` and blends it over `background`.
+    [[nodiscard]] Status flatten_alpha(Rgb background);
 };
 
 Status MediaReader::Impl::open(const std::filesystem::path& file) {
@@ -191,7 +212,7 @@ Status MediaReader::Impl::open(const std::filesystem::path& file) {
 }
 
 Result<ReadStatus> MediaReader::Impl::read_frame(std::uint32_t width, std::uint32_t height,
-                                                 VideoFrame& out) {
+                                                 VideoFrame& out, Rgb background) {
     if (width == 0 || height == 0 || width > kMaxSourceDim || height > kMaxSourceDim) {
         return make_error(ErrorCode::InvalidArgument,
                           "target size must be 1.." + std::to_string(kMaxSourceDim) + " per axis");
@@ -206,7 +227,7 @@ Result<ReadStatus> MediaReader::Impl::read_frame(std::uint32_t width, std::uint3
     for (;;) {
         int rc = avcodec_receive_frame(dec.get(), frame.get());
         if (rc == 0) {
-            const Result<bool> emitted = emit_frame(width, height, bytes, out);
+            const Result<bool> emitted = emit_frame(width, height, bytes, out, background);
             if (const Error* error = emitted.error_if()) {
                 return *error;
             }
@@ -251,8 +272,39 @@ Result<ReadStatus> MediaReader::Impl::read_frame(std::uint32_t width, std::uint3
     }
 }
 
+Status MediaReader::Impl::flatten_alpha(Rgb background) {
+    const int w = frame->width;
+    const int h = frame->height;
+    std::uint64_t pixels = 0;
+    std::uint64_t bytes = 0;
+    if (!checked_mul(static_cast<std::uint64_t>(w), static_cast<std::uint64_t>(h), pixels) ||
+        !checked_mul(pixels, 4, bytes)) {
+        return make_error(ErrorCode::LimitExceeded, "source is over the pixel cap");
+    }
+    if (rgba.size() != bytes) {
+        rgba.resize(static_cast<std::size_t>(bytes));
+    }
+
+    // Same size in and out: this only converts the pixel format (no scaling).
+    sws.reset(sws_getCachedContext(sws.release(), w, h, static_cast<AVPixelFormat>(frame->format),
+                                   w, h, AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr));
+    if (!sws) {
+        return make_error(ErrorCode::UnsupportedFormat, "cannot convert this pixel format to RGBA");
+    }
+    const std::array<std::uint8_t*, 4> dst{rgba.data(), nullptr, nullptr, nullptr};
+    const std::array<int, 4> dst_stride{w * 4, 0, 0, 0};
+    const int rows = sws_scale(sws.get(), frame->data, frame->linesize, 0, h, dst.data(),
+                               dst_stride.data());
+    if (rows != h) {
+        return make_error(ErrorCode::DecodeError, "sws_scale produced " + std::to_string(rows) +
+                                                      " rows, expected " + std::to_string(h));
+    }
+    blend_over(rgba.data(), static_cast<std::size_t>(pixels), background);
+    return Status::success();
+}
+
 Result<bool> MediaReader::Impl::emit_frame(std::uint32_t width, std::uint32_t height,
-                                           std::uint64_t bytes, VideoFrame& out) {
+                                           std::uint64_t bytes, VideoFrame& out, Rgb background) {
     const ffmpeg::FrameUnref release(frame.get());
     if (Status size = check_source_size(frame->width, frame->height); !size.ok()) {
         return size.error();  // the stream changed size mid-way
@@ -284,13 +336,35 @@ Result<bool> MediaReader::Impl::emit_frame(std::uint32_t width, std::uint32_t he
         skip_before_us = kNoSkip;
     }
 
+    // An alpha source is flattened over the background at its own size first:
+    // SWS_AREA averages straight RGBA, so scaling before the blend would mix the
+    // hidden color of transparent pixels into the edges. The flattened buffer is
+    // then scaled as RGB0 (the fourth byte is ignored).
+    const auto src_fmt = static_cast<AVPixelFormat>(frame->format);
+    const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get(src_fmt);
+    const bool has_alpha = desc != nullptr && (desc->flags & AV_PIX_FMT_FLAG_ALPHA) != 0;
+
+    ffmpeg::SwsPtr* scale_ctx = &sws;
+    AVPixelFormat scale_fmt = src_fmt;
+    std::array<const std::uint8_t*, 4> src_data{frame->data[0], frame->data[1], frame->data[2],
+                                                frame->data[3]};
+    std::array<int, 4> src_stride{frame->linesize[0], frame->linesize[1], frame->linesize[2],
+                                  frame->linesize[3]};
+    if (has_alpha) {
+        if (Status flat = flatten_alpha(background); !flat.ok()) {
+            return flat.error();
+        }
+        scale_ctx = &sws_alpha;
+        scale_fmt = AV_PIX_FMT_RGB0;
+        src_data = {rgba.data(), nullptr, nullptr, nullptr};
+        src_stride = {frame->width * 4, 0, 0, 0};
+    }
+
     // Reuses the context while the source and target sizes stay the same.
-    SwsContext* scaler = sws_getCachedContext(
-        sws.release(), frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
-        static_cast<int>(width), static_cast<int>(height), AV_PIX_FMT_RGB24, SWS_AREA, nullptr,
-        nullptr, nullptr);
-    sws.reset(scaler);
-    if (!sws) {
+    scale_ctx->reset(sws_getCachedContext(
+        scale_ctx->release(), frame->width, frame->height, scale_fmt, static_cast<int>(width),
+        static_cast<int>(height), AV_PIX_FMT_RGB24, SWS_AREA, nullptr, nullptr, nullptr));
+    if (!*scale_ctx) {
         return make_error(ErrorCode::UnsupportedFormat, "cannot scale this pixel format to RGB24");
     }
 
@@ -301,8 +375,8 @@ Result<bool> MediaReader::Impl::emit_frame(std::uint32_t width, std::uint32_t he
     }
     const std::array<std::uint8_t*, 4> dst{out.rgb24.data(), nullptr, nullptr, nullptr};
     const std::array<int, 4> dst_stride{static_cast<int>(width * 3), 0, 0, 0};
-    const int rows = sws_scale(sws.get(), frame->data, frame->linesize, 0, frame->height,
-                               dst.data(), dst_stride.data());
+    const int rows = sws_scale(scale_ctx->get(), src_data.data(), src_stride.data(), 0,
+                               frame->height, dst.data(), dst_stride.data());
     if (rows != static_cast<int>(height)) {
         return make_error(ErrorCode::DecodeError, "sws_scale produced " + std::to_string(rows) +
                                                       " rows, expected " + std::to_string(height));
@@ -362,8 +436,8 @@ Result<MediaReader> MediaReader::open(const std::filesystem::path& path) {
 const MediaInfo& MediaReader::info() const noexcept { return impl_->info; }
 
 Result<ReadStatus> MediaReader::read_frame(std::uint32_t width, std::uint32_t height,
-                                           VideoFrame& out) {
-    return impl_->read_frame(width, height, out);
+                                           VideoFrame& out, Rgb background) {
+    return impl_->read_frame(width, height, out, background);
 }
 
 Status MediaReader::seek_us(std::int64_t target_us) { return impl_->seek_us(target_us); }

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "vglyph/error.hpp"
+#include "vglyph/frame.hpp"
 
 namespace vglyph {
 
@@ -64,8 +65,13 @@ public:
     // is normally GridSize::sample_w x sample_h. Returns EndOfStream, and keeps
     // returning it, once every frame was read. A zero or oversized width/height
     // is InvalidArgument and consumes no frame.
+    //
+    // A source with an alpha channel (PNG with transparency, GIF with a
+    // transparent index, ...) is composited over `background` at the source
+    // size, before scaling, so the hidden color of transparent pixels never
+    // bleeds into the scaled result. Opaque sources ignore `background`.
     [[nodiscard]] Result<ReadStatus> read_frame(std::uint32_t width, std::uint32_t height,
-                                                VideoFrame& out);
+                                                VideoFrame& out, Rgb background);
 
     // Repositions so that the next read_frame() returns the frame covering
     // `target_us` (pts <= target < pts + duration), or EndOfStream when the

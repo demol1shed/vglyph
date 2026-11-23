@@ -23,6 +23,8 @@ constexpr Rgb kRed{255, 0, 0};
 constexpr Rgb kGreen{0, 255, 0};
 constexpr Rgb kBlue{0, 0, 255};
 constexpr Rgb kWhite{255, 255, 255};
+// Deliberately not black, so an ignored or black-composited alpha cannot pass by accident.
+constexpr Rgb kBackground{10, 20, 30};
 
 // A fixture that cannot be written is a failure; say why, since the cause is
 // usually an FFmpeg build without the needed encoder.
@@ -46,7 +48,7 @@ void open_ok(const fs::path& path, std::optional<MediaReader>& reader) {
 
 // Reads one frame; a decode error is recorded as a failure and reported as EndOfStream.
 ReadStatus next(MediaReader& reader, std::uint32_t w, std::uint32_t h, VideoFrame& frame) {
-    const vglyph::Result<ReadStatus> r = reader.read_frame(w, h, frame);
+    const vglyph::Result<ReadStatus> r = reader.read_frame(w, h, frame, kBackground);
     const ReadStatus* status = r.value_if();
     VGLYPH_CHECK(status != nullptr);
     if (status == nullptr) {
@@ -140,7 +142,7 @@ VGLYPH_TEST(read_frame_rejects_bad_target_sizes_without_consuming_a_frame) {
     const std::array<std::array<std::uint32_t, 2>, 3> bad{
         {{0, 2}, {2, 0}, {vglyph::kMaxSourceDim + 1, 2}}};
     for (const auto& size : bad) {
-        const vglyph::Result<ReadStatus> r = reader->read_frame(size[0], size[1], frame);
+        const vglyph::Result<ReadStatus> r = reader->read_frame(size[0], size[1], frame, kBackground);
         const vglyph::Error* e = r.error_if();
         VGLYPH_CHECK(e != nullptr && e->code == ErrorCode::InvalidArgument);
     }
