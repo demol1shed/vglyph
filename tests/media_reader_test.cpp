@@ -401,6 +401,35 @@ VGLYPH_TEST(gif_seek_returns_the_frame_covering_the_target) {
     expect_frame_at(*reader, 0, 0, 200'000, kRed, 2);
 }
 
+// Browsers play a delay of 10 ms or less (1 cs, which FFmpeg passes through) as 100 ms.
+VGLYPH_TEST(gif_delays_of_10_ms_or_less_become_100_ms) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const std::vector<GifFrame> gif_frames{{0, 1}, {1, 2}, {2, 1}};  // 1 cs, 2 cs, 1 cs
+    VGLYPH_CHECK(write_file(dir.file("a.gif"),
+                            make_gif(4, 4, {kRed, kGreen, kBlue, kWhite}, gif_frames)));
+    std::optional<MediaReader> reader;
+    open_ok(dir.file("a.gif"), reader);
+    if (!reader) {
+        return;
+    }
+    // The timeline is the sum of the clamped delays: 2 cs is a real 20 ms and stays.
+    const std::array<std::int64_t, 3> pts_us{0, 100'000, 120'000};
+    const std::array<std::int64_t, 3> duration_us{100'000, 20'000, 100'000};
+    VideoFrame frame;
+    for (std::size_t i = 0; i < 3; ++i) {
+        VGLYPH_CHECK(next(*reader, 4, 4, frame) == ReadStatus::Frame);
+        VGLYPH_CHECK(frame.pts_us == pts_us[i]);
+        VGLYPH_CHECK(frame.duration_us == duration_us[i]);
+    }
+    VGLYPH_CHECK(next(*reader, 4, 4, frame) == ReadStatus::EndOfStream);
+
+    // Seeking uses the same timeline.
+    expect_frame_at(*reader, 110'000, 100'000, 20'000, kGreen, 2);
+    expect_frame_at(*reader, 150'000, 120'000, 100'000, kBlue, 2);
+    expect_frame_at(*reader, 0, 0, 100'000, kRed, 2);
+}
+
 VGLYPH_TEST(png_seek_starts_over_from_the_beginning) {
     const TempDir dir;
     VGLYPH_CHECK(dir.ok());
