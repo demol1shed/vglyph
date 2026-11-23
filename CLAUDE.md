@@ -126,14 +126,18 @@ After coding and test runs for a phase are complete, present a concise **Self-Au
 
 ## 6. Phase Tracking
 
-- **Current Phase:** Phase 3 (Text Serialization and `vglyph` CLI)
+- **Current Phase:** Phase 4 (Glyph Rasterizer and Visual/Video Export)
 - **Completed Phases:** Phase 0 (Project Skeleton and Build Gate): verified locally and in CI (Linux GCC/Clang with ASan+UBSan, Windows MSVC).
   Phase 1 (Error Model and Core Conversion Engine): verified locally and in CI (Linux GCC/Clang with ASan+UBSan, Windows MSVC); merged in PRs #5, #6 and #7.
   Phase 2 (FFmpeg Media Reader): verified locally and in CI (Linux GCC/Clang with ASan+UBSan, Windows MSVC); merged in PRs #9, #10 and #11.
+  Phase 3 (Text Serialization and `vglyph` CLI): verified locally and in CI (Linux GCC/Clang with ASan+UBSan, Windows MSVC); merged in PRs #13, #14, #15, #16 and #17. Interactive `play` was checked by hand on Linux (mp4, GIF, photos, resize, terminal restore after Ctrl+C); the Windows Terminal check was not possible (no Windows machine), see the carry-over.
 - **Carry-over:**
   - `vcpkg.json`: the `ffmpeg` features (`avcodec`, `avformat`, `swscale`, `zlib`, `gpl`, `x264`) are verified on Windows CI. The `gui` feature names (`sdl3-binding`, `sdl3-renderer-binding`) are still unverified; confirm them in Phase 6.
   - vcpkg builds FFmpeg with `--disable-autodetect`, so every optional library needs its vcpkg feature (`zlib` is required for PNG). `webp` is not enabled, so WebP is unreadable on Windows; decide before v1.0 (SPEC 1.2 lists WebP). Linux CI uses Ubuntu's FFmpeg 6.1, Windows CI vcpkg's FFmpeg 9.0.2: use only non-deprecated FFmpeg API.
-  - Phase 3: FFmpeg writes its own diagnostics to stderr through `av_log`; the CLI must set the log level so SPEC 8.3's stream contract holds.
+  - Windows: interactive `play` (the `Terminal` guard: keys, resize, Ctrl+C restore, 32 KiB chunked console writes) was never run on Windows; CI only compiles it and smoke-tests the non-console path (UTF-8 file names, `convert`, `play` exits 2 without a console). Verify on Windows Terminal before v1.0.
+  - POSIX `play`: arrow keys start with `Esc` and therefore quit; read the rest of the escape sequence to fix it.
+  - GIF delays of 10 ms or less are clamped to 100 ms for the `gif` demuxer only; APNG and animated WebP are untouched. `info` still reports the container's `fps` and `duration_us` for such GIFs.
+  - The MSVC Debug STL allocates per `std::string`, so the allocation-count test in `tests/player_test.cpp` skips its check when `_ITERATOR_DEBUG_LEVEL != 0`; the Release and Linux builds cover it.
   - Alpha is dropped by the RGB24 conversion instead of being composited over `bg_color`; settle it with the exporters in Phase 4.
   - The 64 MP source pixel cap (`kMaxSourcePixels`) is enforced in `MediaReader` but has no test, since it needs a ~200 MB image.
 
