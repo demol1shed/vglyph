@@ -45,6 +45,7 @@ endif()
 
 add_library(vglyph-core STATIC
   src/core/convert.cpp
+  src/core/utf8.cpp
   src/core/version.cpp
   src/media/ffmpeg_error.cpp
   src/media/media_reader.cpp)
