@@ -179,8 +179,8 @@ To prevent memory exhaustion and integer overflow on malformed or adversarial in
 
 ### 6.1 Text & ANSI Export
 - **`.txt`:** Plain UTF-8 encoded characters with `\n` line endings (strips color metadata).
-- **`.ans`:** UTF-8 text enriched with SGR 24-bit TrueColor escape sequences (`ESC[38;2;R;G;Bm` for `fg`, `ESC[48;2;R;G;Bm` for `bg`, `ESC[0m` reset at end of frame).
-- **Run-Length Color Deduplication:** Emit `fg` or `bg` escape sequences **only** when a cell's color differs from the immediately preceding cell on the same row. This dramatically shrinks `.ans` files and reduces terminal I/O overhead during 60 FPS playback.
+- **`.ans`:** UTF-8 text enriched with SGR 24-bit TrueColor escape sequences (`ESC[38;2;R;G;Bm` for `fg`, `ESC[48;2;R;G;Bm` for `bg`, `ESC[0m` reset at the end of every row, so a background color never bleeds across a line break or when the terminal scrolls). Rows are separated by `\n`; the last row of a frame has no line break, and file writers append the final `\n`.
+- **Run-Length Color Deduplication:** Every row starts by writing both `fg` and `bg`; after that, emit `fg` or `bg` escape sequences **only** when a cell's color differs from the immediately preceding cell on the same row. This dramatically shrinks `.ans` files and reduces terminal I/O overhead during 60 FPS playback.
 - **TrueColor Only:** `.ans` output and terminal playback always use 24-bit SGR sequences. There is no 256-color fallback and no terminal capability detection in v1; a TrueColor-capable terminal is required.
 
 ### 6.2 Terminal Playback Engine (`vglyph play`)
