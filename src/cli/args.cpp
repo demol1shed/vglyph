@@ -306,7 +306,8 @@ std::string_view usage_text() noexcept {
            "      --frame <index>     Frame to convert, 0-based (0)\n"
            "\n"
            "Options for play:\n"
-           "      --loop              Loop GIF and video playback\n";
+           "      --loop              Loop GIF and video playback\n"
+           "  Keys: Space pauses, l toggles looping, q or Esc quits.\n";
 }
 
 Result<CliOptions> parse_args(std::span<const std::string_view> args) {
