@@ -56,7 +56,8 @@ target_link_libraries(vglyph-core PRIVATE vglyph-options vglyph-ffmpeg)
 # CLI logic as a static library so the tests can link it; main.cpp stays tiny.
 # platform_*.cpp are the only files that include OS console headers.
 add_library(vglyph-cli-impl STATIC
-  src/cli/args.cpp)
+  src/cli/args.cpp
+  src/cli/commands.cpp)
 if(WIN32)
   target_sources(vglyph-cli-impl PRIVATE src/cli/platform_win32.cpp)
 else()
@@ -66,7 +67,7 @@ target_include_directories(vglyph-cli-impl PUBLIC src/cli)
 target_link_libraries(vglyph-cli-impl PUBLIC vglyph-core PRIVATE vglyph-options)
 
 add_executable(vglyph src/cli/main.cpp)
-target_link_libraries(vglyph PRIVATE vglyph-core vglyph-options)
+target_link_libraries(vglyph PRIVATE vglyph-cli-impl vglyph-options)
 if(MSVC)
   # UTF-8 active code page: argv and file names arrive as UTF-8 on Windows.
   target_sources(vglyph PRIVATE src/cli/vglyph.manifest)

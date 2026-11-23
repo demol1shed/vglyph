@@ -219,9 +219,9 @@ To prevent memory exhaustion and integer overflow on malformed or adversarial in
 ## 8. CLI Specification (`vglyph`)
 
 ### 8.1 Subcommands
-- `vglyph convert <input> -o <output> [options]` — Convert photo, GIF, or video to `.txt`, `.ans`, `.png`, `.gif`, or `.mp4` (inferred from `<output>` extension or overridden via `--format`). If `-o -` is passed with `.txt`/`.ans`, writes to `stdout`.
+- `vglyph convert <input> -o <output> [options]` — Convert photo, GIF, or video to `.txt`, `.ans`, `.png`, `.gif`, or `.mp4` (inferred from `<output>` extension or overridden via `--format`). `-o -` writes to `stdout` instead of a file; without `--format` it writes `.ans`, so use `--format txt` for plain text.
 - `vglyph play <input> [options]` — Play photo, GIF, or video directly in the terminal with TrueColor ANSI rendering.
-- `vglyph info <input>` — Print structured media metadata (`MediaInfo`) to `stdout`.
+- `vglyph info <input>` — Print structured media metadata (`MediaInfo`) to `stdout`, one `key: value` line per field in this order: `kind`, `width`, `height`, `pixel_format`, `codec`, `fps`, `duration_us`, `has_audio`.
 - `vglyph --version` / `vglyph --help` — Print version/GPLv3 notice or usage help.
 
 ### 8.2 Core Flags

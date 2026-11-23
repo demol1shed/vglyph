@@ -1,17 +1,18 @@
-#include <cstdio>
-#include <cstring>
+#include <string_view>
+#include <vector>
 
-#include "vglyph/version.hpp"
+#include "commands.hpp"
+#include "platform.hpp"
+#include "vglyph/media_reader.hpp"
 
 int main(int argc, char** argv) {
-    if (argc == 2 && std::strcmp(argv[1], "--version") == 0) {
-        if (std::printf("vglyph %s\nLicense: GPLv3\n", vglyph::version_string()) < 0) {
-            return 1;
-        }
-        return 0;
+    // FFmpeg's own stderr output would break SPEC 8.3's stream contract.
+    vglyph::set_media_log_quiet();
+    const vglyph::cli::ConsoleOutput console;
+
+    std::vector<std::string_view> args;
+    if (argc > 1) {
+        args.assign(argv + 1, argv + argc);
     }
-    if (std::fprintf(stderr, "usage: vglyph --version\n") < 0) {
-        return 1;
-    }
-    return 2;
+    return vglyph::cli::run(args);
 }
