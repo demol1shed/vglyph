@@ -108,7 +108,7 @@ private:
 // ---- FFmpeg-encoded files (PNG, MP4) -----------------------------------------
 
 struct FixtureFrame {
-    std::vector<std::uint8_t> rgb24;
+    std::vector<std::uint8_t> rgb24;  // RGBA bytes when the spec's pix_fmt is AV_PIX_FMT_RGBA
     std::int64_t pts = 0;       // in spec.time_base ticks
     std::int64_t duration = 0;  // in spec.time_base ticks
 };
@@ -219,7 +219,7 @@ using OutputFormat = std::unique_ptr<AVFormatContext, OutputFormatDeleter>;
         return detail::fail("av_frame_get_buffer", rc);
     }
     ffmpeg::SwsPtr sws;
-    if (spec.pix_fmt != AV_PIX_FMT_RGB24) {
+    if (spec.pix_fmt != AV_PIX_FMT_RGB24 && spec.pix_fmt != AV_PIX_FMT_RGBA) {
         sws.reset(sws_getContext(spec.width, spec.height, AV_PIX_FMT_RGB24, spec.width, spec.height,
                                  spec.pix_fmt, SWS_BILINEAR, nullptr, nullptr, nullptr));
         if (!sws) {
@@ -255,7 +255,8 @@ using OutputFormat = std::unique_ptr<AVFormatContext, OutputFormatDeleter>;
         }
     };
 
-    const auto row_bytes = static_cast<std::size_t>(spec.width) * 3;
+    const std::size_t bytes_per_pixel = spec.pix_fmt == AV_PIX_FMT_RGBA ? 4 : 3;
+    const auto row_bytes = static_cast<std::size_t>(spec.width) * bytes_per_pixel;
     for (const FixtureFrame& f : frames) {
         rc = av_frame_make_writable(frame.get());
         if (rc < 0) {
@@ -311,6 +312,20 @@ using OutputFormat = std::unique_ptr<AVFormatContext, OutputFormatDeleter>;
     return write_ffmpeg_fixture(path, spec, frames);
 }
 
+// A PNG with an alpha channel; `rgba` is w * h * 4 bytes, straight (not premultiplied).
+[[nodiscard]] inline vglyph::Status write_png_rgba(const fs::path& path, int w, int h,
+                                                   std::vector<std::uint8_t> rgba) {
+    FixtureSpec spec;
+    spec.codec_id = AV_CODEC_ID_PNG;
+    spec.pix_fmt = AV_PIX_FMT_RGBA;
+    spec.single_image = true;
+    spec.width = w;
+    spec.height = h;
+    std::vector<FixtureFrame> frames(1);
+    frames[0].rgb24 = std::move(rgba);
+    return write_ffmpeg_fixture(path, spec, frames);
+}
+
 // MPEG-4 in MP4, time base 1 ms. `frames[i].pts` / `.duration` are milliseconds.
 [[nodiscard]] inline vglyph::Status write_mp4(const fs::path& path, int w, int h,
                                               const std::vector<FixtureFrame>& frames) {
@@ -328,6 +343,7 @@ using OutputFormat = std::unique_ptr<AVFormatContext, OutputFormatDeleter>;
 struct GifFrame {
     std::uint8_t color_index = 0;  // the whole frame is this palette entry
     std::uint16_t delay_cs = 0;    // hundredths of a second, written as is
+    int transparent_index = -1;    // palette entry drawn as transparent; -1 for none
 };
 
 // A looping GIF89a with a 256-entry global palette whose first four entries are
@@ -364,9 +380,10 @@ struct GifFrame {
     constexpr int kEnd = 257;
     constexpr std::size_t kCodesPerClear = 200;
     for (const GifFrame& f : frames) {
-        put({0x21, 0xF9, 0x04, 0x04});  // graphic control: disposal 1, no transparency
+        const bool transparent = f.transparent_index >= 0;
+        put({0x21, 0xF9, 0x04, transparent ? 0x05 : 0x04});  // graphic control: disposal 1
         put16(f.delay_cs);
-        put({0x00, 0x00});
+        put({transparent ? f.transparent_index : 0, 0x00});
         put({0x2C});
         put16(0);
         put16(0);

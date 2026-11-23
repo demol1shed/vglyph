@@ -70,6 +70,11 @@ bool near(Rgb p, Rgb want, int tolerance) {
            std::abs(p.b - want.b) <= tolerance;
 }
 
+// One channel of a straight-alpha blend over a background channel (rounded).
+std::uint8_t blend(int channel, int alpha, int background) {
+    return static_cast<std::uint8_t>((channel * alpha + background * (255 - alpha) + 127) / 255);
+}
+
 bool has_code(const vglyph::Result<MediaReader>& r, ErrorCode code) {
     const vglyph::Error* e = r.error_if();
     return e != nullptr && e->code == code;
@@ -180,6 +185,78 @@ VGLYPH_TEST(png_reads_scaled_quadrants_then_ends) {
 
     VGLYPH_CHECK(next(*reader, 2, 2, frame) == ReadStatus::EndOfStream);
     VGLYPH_CHECK(next(*reader, 2, 2, frame) == ReadStatus::EndOfStream);  // and stays there
+}
+
+// ---- Alpha --------------------------------------------------------------------
+
+VGLYPH_TEST(png_alpha_is_composited_over_the_background) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    // Opaque red, fully transparent white, half-transparent (200,100,50), opaque blue.
+    const std::vector<std::uint8_t> rgba{255, 0,   0,  255,  255, 255, 255, 0,
+                                         200, 100, 50, 128,  0,   0,   255, 255};
+    VGLYPH_CHECK(fixture_ok(write_png_rgba(dir.file("a.png"), 4, 1, rgba)));
+    std::optional<MediaReader> reader;
+    open_ok(dir.file("a.png"), reader);
+    if (!reader) {
+        return;
+    }
+    VideoFrame frame;
+    VGLYPH_CHECK(next(*reader, 4, 1, frame) == ReadStatus::Frame);
+    VGLYPH_CHECK(near(pixel(frame, 0, 0), kRed, 1));
+    VGLYPH_CHECK(near(pixel(frame, 1, 0), kBackground, 1));  // not the hidden white
+    const Rgb half{blend(200, 128, kBackground.r), blend(100, 128, kBackground.g),
+                   blend(50, 128, kBackground.b)};
+    VGLYPH_CHECK(near(pixel(frame, 2, 0), half, 1));
+    VGLYPH_CHECK(near(pixel(frame, 3, 0), kBlue, 1));
+}
+
+// SWS_AREA averages straight RGBA, so scaling before the blend would haze the
+// edge with the hidden white of the transparent half.
+VGLYPH_TEST(png_alpha_is_composited_before_scaling) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    // Left half opaque red, right half transparent white; the 1x1 result averages both.
+    constexpr int kWidth = 8;
+    std::vector<std::uint8_t> rgba;
+    for (int x = 0; x < kWidth; ++x) {
+        const bool left = x < kWidth / 2;
+        rgba.insert(rgba.end(), {static_cast<std::uint8_t>(255), static_cast<std::uint8_t>(left ? 0 : 255),
+                                 static_cast<std::uint8_t>(left ? 0 : 255), static_cast<std::uint8_t>(left ? 255 : 0)});
+    }
+    VGLYPH_CHECK(fixture_ok(write_png_rgba(dir.file("a.png"), kWidth, 1, rgba)));
+    std::optional<MediaReader> reader;
+    open_ok(dir.file("a.png"), reader);
+    if (!reader) {
+        return;
+    }
+    VideoFrame frame;
+    VGLYPH_CHECK(next(*reader, 1, 1, frame) == ReadStatus::Frame);
+    const Rgb average{static_cast<std::uint8_t>((kRed.r + kBackground.r) / 2),
+                      static_cast<std::uint8_t>((kRed.g + kBackground.g) / 2),
+                      static_cast<std::uint8_t>((kRed.b + kBackground.b) / 2)};
+    VGLYPH_CHECK(near(pixel(frame, 0, 0), average, 2));
+}
+
+VGLYPH_TEST(gif_transparent_pixels_show_the_background) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    // Frame 1 is all transparent (palette entry 3); frame 2 is opaque red. Only the
+    // first frame is checked for the background, because with disposal 1 a later
+    // transparent frame would show the previous one.
+    const std::vector<GifFrame> gif_frames{{3, 10, 3}, {0, 10, -1}};
+    VGLYPH_CHECK(write_file(dir.file("a.gif"),
+                            make_gif(4, 4, {kRed, kGreen, kBlue, kWhite}, gif_frames)));
+    std::optional<MediaReader> reader;
+    open_ok(dir.file("a.gif"), reader);
+    if (!reader) {
+        return;
+    }
+    VideoFrame frame;
+    VGLYPH_CHECK(next(*reader, 4, 4, frame) == ReadStatus::Frame);
+    VGLYPH_CHECK(near(pixel(frame, 1, 1), kBackground, 2));
+    VGLYPH_CHECK(next(*reader, 4, 4, frame) == ReadStatus::Frame);
+    VGLYPH_CHECK(near(pixel(frame, 1, 1), kRed, 2));
 }
 
 // ---- Animated GIF -------------------------------------------------------------
