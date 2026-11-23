@@ -53,6 +53,12 @@ add_library(vglyph-core STATIC
 target_include_directories(vglyph-core PUBLIC include PRIVATE src/core src/media)
 target_link_libraries(vglyph-core PRIVATE vglyph-options vglyph-ffmpeg)
 
+# CLI logic as a static library so the tests can link it; main.cpp stays tiny.
+add_library(vglyph-cli-impl STATIC
+  src/cli/args.cpp)
+target_include_directories(vglyph-cli-impl PUBLIC src/cli)
+target_link_libraries(vglyph-cli-impl PUBLIC vglyph-core PRIVATE vglyph-options)
+
 add_executable(vglyph src/cli/main.cpp)
 target_link_libraries(vglyph PRIVATE vglyph-core vglyph-options)
 
