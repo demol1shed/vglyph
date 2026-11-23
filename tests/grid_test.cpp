@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <limits>
+#include <string>
 
 #include "test_framework.hpp"
 #include "vglyph/convert.hpp"
@@ -97,6 +98,26 @@ VGLYPH_TEST(validate_rejects_out_of_range_values) {
     VGLYPH_CHECK(has_code(vglyph::validate(c), bad));
     c.charset.clear();
     VGLYPH_CHECK(has_code(vglyph::validate(c), bad));
+}
+
+VGLYPH_TEST(validate_rejects_unsafe_charset_codepoints) {
+    const ErrorCode bad = ErrorCode::InvalidArgument;
+    // C0 (including ESC and NUL), DEL, C1, surrogates, past U+10FFFF.
+    const char32_t rejected[] = {0x00, 0x09, 0x0A, 0x1B, 0x1F, 0x7F, 0x80, 0x9B, 0x9F,
+                                 0xD800, 0xDFFF, 0x110000};
+    for (const char32_t c : rejected) {
+        ConvertConfig cfg;
+        cfg.charset = std::u32string(U"a") + c + U"b";
+        VGLYPH_CHECK(has_code(vglyph::validate(cfg), bad));
+    }
+
+    // Space, the first codepoint past C1, and the last scalar value stay valid.
+    const char32_t accepted[] = {0x20, 0xA0, 0x2580, 0x10FFFF};
+    for (const char32_t c : accepted) {
+        ConvertConfig cfg;
+        cfg.charset = std::u32string(U"a") + c;
+        VGLYPH_CHECK(vglyph::validate(cfg).ok());
+    }
 }
 
 VGLYPH_TEST(validate_rejects_nan_and_infinity) {
