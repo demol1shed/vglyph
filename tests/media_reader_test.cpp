@@ -340,6 +340,49 @@ VGLYPH_TEST(mp4_variable_frame_rate_keeps_per_frame_timing) {
     VGLYPH_CHECK(next(*reader, 8, 8, frame) == ReadStatus::EndOfStream);
 }
 
+// Reading yuv420p at its own size takes swscale's unscaled path. Without accurate
+// rounding it skips the last columns for some widths and writes past the buffer.
+VGLYPH_TEST(same_size_yuv420p_reads_fill_the_frame_and_nothing_more) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    constexpr int kHeight = 18;
+    constexpr std::size_t kGuardBytes = 128;
+    constexpr std::uint8_t kGuard = 7;
+    for (const int width : {10, 17, 18, 32, 34, 40, 50}) {
+        const auto frames = mp4_frames({0}, {100}, {kWhite}, width, kHeight);
+        VGLYPH_CHECK(fixture_ok(write_mp4(dir.file("w.mp4"), width, kHeight, frames)));
+        std::optional<MediaReader> reader;
+        open_ok(dir.file("w.mp4"), reader);
+        if (!reader) {
+            return;
+        }
+        // A frame already at the target size is not resized, so the extra bytes
+        // stay behind the pixels and show any write past their end.
+        VideoFrame frame;
+        frame.width = static_cast<std::uint32_t>(width);
+        frame.height = kHeight;
+        const std::size_t bytes = static_cast<std::size_t>(width) * kHeight * 3;
+        frame.rgb24.assign(bytes + kGuardBytes, kGuard);
+        VGLYPH_CHECK(next(*reader, frame.width, frame.height, frame) == ReadStatus::Frame);
+
+        bool filled = true;
+        for (std::uint32_t y = 0; y < frame.height; ++y) {
+            for (std::uint32_t x = 0; x < frame.width; ++x) {
+                filled = filled && near(pixel(frame, x, y), kWhite, 12);
+            }
+        }
+        bool guard_intact = true;
+        for (std::size_t i = bytes; i < frame.rgb24.size(); ++i) {
+            guard_intact = guard_intact && frame.rgb24[i] == kGuard;
+        }
+        if (!filled || !guard_intact) {
+            vglyph_test::out("  width %d: filled=%d guard_intact=%d\n", width, filled, guard_intact);
+        }
+        VGLYPH_CHECK(filled);
+        VGLYPH_CHECK(guard_intact);
+    }
+}
+
 VGLYPH_TEST(target_size_may_change_between_reads) {
     const TempDir dir;
     VGLYPH_CHECK(dir.ok());
