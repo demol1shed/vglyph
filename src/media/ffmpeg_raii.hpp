@@ -34,6 +34,18 @@ struct SwsDeleter {
 struct DictDeleter {
     void operator()(AVDictionary* p) const noexcept { av_dict_free(&p); }
 };
+// An output context also owns its open file; a file that finish() already
+// closed makes the avio_closep here a no-op. Its status is ignored because a
+// destructor has nobody to report to; finish() checks the real close.
+struct OutputFormatDeleter {
+    void operator()(AVFormatContext* p) const noexcept {
+        if (p == nullptr) {
+            return;
+        }
+        (void)avio_closep(&p->pb);  // pb is null for a muxer that opens its own files
+        avformat_free_context(p);
+    }
+};
 
 using FormatCtx = std::unique_ptr<AVFormatContext, FormatCtxDeleter>;
 using CodecCtx = std::unique_ptr<AVCodecContext, CodecCtxDeleter>;
@@ -41,6 +53,7 @@ using FramePtr = std::unique_ptr<AVFrame, FrameDeleter>;
 using PacketPtr = std::unique_ptr<AVPacket, PacketDeleter>;
 using SwsPtr = std::unique_ptr<SwsContext, SwsDeleter>;
 using DictPtr = std::unique_ptr<AVDictionary, DictDeleter>;
+using OutputFormatCtx = std::unique_ptr<AVFormatContext, OutputFormatDeleter>;
 
 // Releases the buffers a decoded frame holds when the scope ends, so every
 // return path hands the frame back to the decoder.

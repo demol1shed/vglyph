@@ -1,0 +1,257 @@
+#include "vglyph/media_exporter.hpp"
+
+#include <cstddef>
+#include <cstring>
+#include <string>
+#include <utility>
+
+#include "checked_math.hpp"
+#include "ffmpeg_error.hpp"
+#include "ffmpeg_raii.hpp"
+#include "vglyph/convert.hpp"
+
+namespace vglyph {
+
+namespace {
+
+constexpr std::size_t kBytesPerPixel = 4;
+
+[[nodiscard]] Status check_output_size(std::uint32_t width, std::uint32_t height) {
+    std::uint64_t pixels = 0;
+    if (width == 0 || height == 0) {
+        return make_error(ErrorCode::InvalidArgument, "output size must not be zero");
+    }
+    if (width > kMaxSourceDim || height > kMaxSourceDim ||
+        !checked_mul(width, height, pixels) || pixels > kMaxSourcePixels) {
+        return make_error(ErrorCode::LimitExceeded,
+                          "output is " + std::to_string(width) + "x" + std::to_string(height) +
+                              ", over the " + std::to_string(kMaxSourceDim) + " per axis / " +
+                              std::to_string(kMaxSourcePixels) + " pixel cap");
+    }
+    return Status::success();
+}
+
+}  // namespace
+
+struct MediaExporter::Impl {
+    ExportFormat format = ExportFormat::Png;
+    ExportOptions options;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    ffmpeg::OutputFormatCtx oc;
+    AVStream* stream = nullptr;  // owned by `oc`
+    ffmpeg::CodecCtx enc;
+    ffmpeg::FramePtr frame;
+    ffmpeg::PacketPtr pkt;
+    std::uint64_t frames_written = 0;
+    bool finished = false;
+
+    [[nodiscard]] Status open(const std::filesystem::path& path);
+    [[nodiscard]] Status write_frame(const RgbaImage& image, std::int64_t pts_us,
+                                     std::int64_t duration_us);
+    [[nodiscard]] Status finish();
+
+private:
+    // Sends `f` (null flushes) and writes every packet the encoder returns.
+    [[nodiscard]] Status encode(const AVFrame* f);
+    // Copies `image` into the (writable) frame.
+    void fill_frame(const RgbaImage& image);
+};
+
+Status MediaExporter::Impl::open(const std::filesystem::path& path) {
+    if (Status size = check_output_size(width, height); !size.ok()) {
+        return size;
+    }
+
+    const char* muxer = nullptr;
+    const AVCodec* codec = nullptr;
+    AVPixelFormat pix_fmt = AV_PIX_FMT_RGBA;
+    AVRational time_base{1, 1};
+    switch (format) {
+        case ExportFormat::Png:
+            muxer = "image2";
+            codec = avcodec_find_encoder(AV_CODEC_ID_PNG);
+            break;
+        case ExportFormat::Gif:
+        case ExportFormat::Mp4:
+            return make_error(ErrorCode::UnsupportedFormat, "this export format is not available yet");
+    }
+    if (codec == nullptr) {
+        return make_error(ErrorCode::UnsupportedFormat,
+                          "this FFmpeg build has no encoder for the format");
+    }
+
+    const std::u8string u8 = path.u8string();
+    const std::string name(reinterpret_cast<const char*>(u8.data()), u8.size());
+    AVFormatContext* raw_oc = nullptr;
+    int rc = avformat_alloc_output_context2(&raw_oc, nullptr, muxer, name.c_str());
+    if (rc < 0) {
+        return ffmpeg_error(ErrorCode::UnsupportedFormat, "avformat_alloc_output_context2", rc);
+    }
+    oc.reset(raw_oc);
+
+    stream = avformat_new_stream(oc.get(), nullptr);
+    enc.reset(avcodec_alloc_context3(codec));
+    if (stream == nullptr || !enc) {
+        return make_error(ErrorCode::InternalError, "cannot allocate the stream or encoder");
+    }
+    enc->width = static_cast<int>(width);
+    enc->height = static_cast<int>(height);
+    enc->pix_fmt = pix_fmt;
+    enc->time_base = time_base;
+    if ((oc->oformat->flags & AVFMT_GLOBALHEADER) != 0) {
+        enc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    }
+    rc = avcodec_open2(enc.get(), codec, nullptr);
+    if (rc < 0) {
+        return ffmpeg_error(ErrorCode::EncodeError, "avcodec_open2", rc);
+    }
+    rc = avcodec_parameters_from_context(stream->codecpar, enc.get());
+    if (rc < 0) {
+        return ffmpeg_error(ErrorCode::InternalError, "avcodec_parameters_from_context", rc);
+    }
+    stream->time_base = enc->time_base;
+
+    frame.reset(av_frame_alloc());
+    pkt.reset(av_packet_alloc());
+    if (!frame || !pkt) {
+        return make_error(ErrorCode::InternalError, "cannot allocate the frame or packet");
+    }
+    frame->format = enc->pix_fmt;
+    frame->width = enc->width;
+    frame->height = enc->height;
+    rc = av_frame_get_buffer(frame.get(), 0);
+    if (rc < 0) {
+        return ffmpeg_error(ErrorCode::InternalError, "av_frame_get_buffer", rc);
+    }
+
+    rc = avio_open(&oc->pb, name.c_str(), AVIO_FLAG_WRITE);
+    if (rc < 0) {
+        return ffmpeg_error(ErrorCode::IoError, "avio_open", rc);
+    }
+    // The image2 muxer expects a "%d" pattern unless told it writes one image.
+    AVDictionary* raw_opts = nullptr;
+    if (format == ExportFormat::Png) {
+        rc = av_dict_set(&raw_opts, "update", "1", 0);
+        if (rc < 0) {
+            const ffmpeg::DictPtr cleanup(raw_opts);
+            return ffmpeg_error(ErrorCode::InternalError, "av_dict_set", rc);
+        }
+    }
+    rc = avformat_write_header(oc.get(), &raw_opts);
+    const ffmpeg::DictPtr leftover_opts(raw_opts);
+    if (rc < 0) {
+        return ffmpeg_error(ErrorCode::EncodeError, "avformat_write_header", rc);
+    }
+    return Status::success();
+}
+
+Status MediaExporter::Impl::encode(const AVFrame* f) {
+    int rc = avcodec_send_frame(enc.get(), f);
+    if (rc < 0) {
+        return ffmpeg_error(ErrorCode::EncodeError, "avcodec_send_frame", rc);
+    }
+    for (;;) {
+        rc = avcodec_receive_packet(enc.get(), pkt.get());
+        if (rc == AVERROR(EAGAIN) || rc == AVERROR_EOF) {
+            return Status::success();
+        }
+        if (rc < 0) {
+            return ffmpeg_error(ErrorCode::EncodeError, "avcodec_receive_packet", rc);
+        }
+        pkt->stream_index = stream->index;
+        av_packet_rescale_ts(pkt.get(), enc->time_base, stream->time_base);
+        rc = av_interleaved_write_frame(oc.get(), pkt.get());  // unrefs the packet, even on error
+        if (rc < 0) {
+            return ffmpeg_error(ErrorCode::IoError, "av_interleaved_write_frame", rc);
+        }
+    }
+}
+
+void MediaExporter::Impl::fill_frame(const RgbaImage& image) {
+    const std::size_t row_bytes = static_cast<std::size_t>(width) * kBytesPerPixel;
+    for (std::uint32_t y = 0; y < height; ++y) {
+        std::memcpy(frame->data[0] + static_cast<std::ptrdiff_t>(y) * frame->linesize[0],
+                    image.rgba.data() + y * row_bytes, row_bytes);
+    }
+}
+
+Status MediaExporter::Impl::write_frame(const RgbaImage& image, std::int64_t pts_us,
+                                        std::int64_t duration_us) {
+    if (finished) {
+        return make_error(ErrorCode::InvalidArgument, "the exporter was already finished");
+    }
+    if (image.width != width || image.height != height ||
+        image.rgba.size() != static_cast<std::size_t>(width) * height * kBytesPerPixel) {
+        return make_error(ErrorCode::InvalidArgument,
+                          "frame is not " + std::to_string(width) + "x" + std::to_string(height));
+    }
+    if (pts_us < 0 || duration_us < 0) {
+        return make_error(ErrorCode::InvalidArgument, "pts_us and duration_us must not be negative");
+    }
+    if (format == ExportFormat::Png && frames_written > 0) {
+        return make_error(ErrorCode::InvalidArgument, "a PNG holds exactly one frame");
+    }
+
+    int rc = av_frame_make_writable(frame.get());
+    if (rc < 0) {
+        return ffmpeg_error(ErrorCode::InternalError, "av_frame_make_writable", rc);
+    }
+    fill_frame(image);
+    frame->pts = 0;  // a PNG has no timeline
+    if (Status sent = encode(frame.get()); !sent.ok()) {
+        return sent;
+    }
+    ++frames_written;
+    return Status::success();
+}
+
+Status MediaExporter::Impl::finish() {
+    if (finished) {
+        return make_error(ErrorCode::InvalidArgument, "the exporter was already finished");
+    }
+    if (frames_written == 0) {
+        return make_error(ErrorCode::InvalidArgument, "no frame was written");
+    }
+    finished = true;
+    if (Status flushed = encode(nullptr); !flushed.ok()) {
+        return flushed;
+    }
+    int rc = av_write_trailer(oc.get());
+    if (rc < 0) {
+        return ffmpeg_error(ErrorCode::IoError, "av_write_trailer", rc);
+    }
+    rc = avio_closep(&oc->pb);
+    if (rc < 0) {
+        return ffmpeg_error(ErrorCode::IoError, "avio_closep", rc);
+    }
+    return Status::success();
+}
+
+MediaExporter::MediaExporter(std::unique_ptr<Impl> impl) noexcept : impl_(std::move(impl)) {}
+MediaExporter::MediaExporter(MediaExporter&&) noexcept = default;
+MediaExporter& MediaExporter::operator=(MediaExporter&&) noexcept = default;
+MediaExporter::~MediaExporter() = default;
+
+Result<MediaExporter> MediaExporter::open(const std::filesystem::path& path, ExportFormat format,
+                                          std::uint32_t width, std::uint32_t height,
+                                          const ExportOptions& options) {
+    auto impl = std::make_unique<Impl>();
+    impl->format = format;
+    impl->options = options;
+    impl->width = width;
+    impl->height = height;
+    if (Status opened = impl->open(path); !opened.ok()) {
+        return opened.error();
+    }
+    return MediaExporter(std::move(impl));
+}
+
+Status MediaExporter::write_frame(const RgbaImage& image, std::int64_t pts_us,
+                                  std::int64_t duration_us) {
+    return impl_->write_frame(image, pts_us, duration_us);
+}
+
+Status MediaExporter::finish() { return impl_->finish(); }
+
+}  // namespace vglyph
