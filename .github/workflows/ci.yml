@@ -57,13 +57,21 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
       # FFmpeg comes from the runner's vcpkg through the `media` manifest
-      # feature; built packages are cached so only the first run is slow.
+      # feature; built packages are cached, so only the first run after a change
+      # to vcpkg.json or to the runner image is slow.
       - name: Prepare vcpkg binary cache
-        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE
+        id: vcpkg
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE
+          "image=$env:ImageVersion" >> $env:GITHUB_OUTPUT
+      # The runner image brings its own vcpkg ports, so a new image can need new
+      # packages. A cache is never saved again under a key that already hit, so
+      # the image is part of the key; restore-keys brings back what still matches.
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}\vcpkg-cache
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}-${{ steps.vcpkg.outputs.image }}
+          restore-keys: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
       - name: Configure
         run: >
           cmake -B build -G Ninja
