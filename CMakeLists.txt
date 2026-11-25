@@ -134,6 +134,11 @@ add_vglyph_test(media_reader)
 target_include_directories(vglyph-media_reader-test PRIVATE src/media)
 target_link_libraries(vglyph-media_reader-test PRIVATE vglyph-ffmpeg)
 
+# Round-trips the exporters through MediaReader; also tests the internal quantizer.
+add_vglyph_test(media_exporter)
+target_include_directories(vglyph-media_exporter-test PRIVATE src/media)
+target_link_libraries(vglyph-media_exporter-test PRIVATE vglyph-ffmpeg)
+
 # CLI tests link the CLI library (which brings in its own include directory).
 add_vglyph_test(cli_args)
 target_link_libraries(vglyph-cli_args-test PRIVATE vglyph-cli-impl)
