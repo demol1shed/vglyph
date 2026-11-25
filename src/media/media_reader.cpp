@@ -64,6 +64,11 @@ constexpr std::int64_t kNoSkip = std::numeric_limits<std::int64_t>::min();
 constexpr std::int64_t kGifMaxQuirkDelayUs = 10'000;
 constexpr std::int64_t kGifDefaultDelayUs = 100'000;
 
+// Added to every swscale flag set. Without it the x86 same-size yuv -> RGB
+// converters leave the last columns unwritten for some widths and write up to
+// 60 bytes past a tightly packed destination, which `rgb24` and `rgba` are.
+constexpr int kSwsExact = SWS_ACCURATE_RND;
+
 // Blends straight (non-premultiplied) RGBA pixels over `bg`, in place. Only the
 // color bytes change; the alpha byte is left for the RGB0 reader to ignore.
 void blend_over(std::uint8_t* rgba, std::size_t pixels, Rgb bg) noexcept {
@@ -287,7 +292,8 @@ Status MediaReader::Impl::flatten_alpha(Rgb background) {
 
     // Same size in and out: this only converts the pixel format (no scaling).
     sws.reset(sws_getCachedContext(sws.release(), w, h, static_cast<AVPixelFormat>(frame->format),
-                                   w, h, AV_PIX_FMT_RGBA, SWS_BILINEAR, nullptr, nullptr, nullptr));
+                                   w, h, AV_PIX_FMT_RGBA, SWS_BILINEAR | kSwsExact, nullptr, nullptr,
+                                   nullptr));
     if (!sws) {
         return make_error(ErrorCode::UnsupportedFormat, "cannot convert this pixel format to RGBA");
     }
@@ -363,7 +369,8 @@ Result<bool> MediaReader::Impl::emit_frame(std::uint32_t width, std::uint32_t he
     // Reuses the context while the source and target sizes stay the same.
     scale_ctx->reset(sws_getCachedContext(
         scale_ctx->release(), frame->width, frame->height, scale_fmt, static_cast<int>(width),
-        static_cast<int>(height), AV_PIX_FMT_RGB24, SWS_AREA, nullptr, nullptr, nullptr));
+        static_cast<int>(height), AV_PIX_FMT_RGB24, SWS_AREA | kSwsExact, nullptr, nullptr,
+        nullptr));
     if (!*scale_ctx) {
         return make_error(ErrorCode::UnsupportedFormat, "cannot scale this pixel format to RGB24");
     }
