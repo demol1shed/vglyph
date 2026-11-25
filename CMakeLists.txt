@@ -62,6 +62,7 @@ add_library(vglyph-core STATIC
   src/core/version.cpp
   src/media/ffmpeg_error.cpp
   src/media/media_exporter.cpp
+  src/media/quantize.cpp
   src/media/media_reader.cpp
   src/render/glyph_atlas.cpp
   src/render/rasterizer.cpp
