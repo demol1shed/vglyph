@@ -1,13 +1,18 @@
 #include "vglyph/media_exporter.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "checked_math.hpp"
 #include "ffmpeg_error.hpp"
 #include "ffmpeg_raii.hpp"
+#include "quantize.hpp"
 #include "vglyph/convert.hpp"
 
 namespace vglyph {
@@ -15,6 +20,8 @@ namespace vglyph {
 namespace {
 
 constexpr std::size_t kBytesPerPixel = 4;
+constexpr AVRational kMicros{1, 1'000'000};
+constexpr AVRational kCentis{1, 100};  // GIF delays are in hundredths of a second
 
 [[nodiscard]] Status check_output_size(std::uint32_t width, std::uint32_t height) {
     std::uint64_t pixels = 0;
@@ -46,6 +53,14 @@ struct MediaExporter::Impl {
     std::uint64_t frames_written = 0;
     bool finished = false;
 
+    // GIF only.
+    ffmpeg::FramePtr spare_frame;  // the encoder keeps the last frame, so two take turns
+    std::unique_ptr<Quantizer> quantizer;
+    std::vector<std::uint8_t> gif_indices;            // width * height palette indices
+    std::array<std::uint32_t, kPaletteSize> palette{};
+    std::int64_t last_pts_cs = -1;                    // keeps frame times strictly increasing
+    std::int64_t last_duration_cs = 0;                // the packet of the frame just encoded
+
     [[nodiscard]] Status open(const std::filesystem::path& path);
     [[nodiscard]] Status write_frame(const RgbaImage& image, std::int64_t pts_us,
                                      std::int64_t duration_us);
@@ -54,8 +69,10 @@ struct MediaExporter::Impl {
 private:
     // Sends `f` (null flushes) and writes every packet the encoder returns.
     [[nodiscard]] Status encode(const AVFrame* f);
-    // Copies `image` into the (writable) frame.
+    // Copies `image` into the (writable) frame; for a GIF, quantizes it first.
     void fill_frame(const RgbaImage& image);
+    // Sets frame->pts and frame->duration (and the GIF timeline state).
+    [[nodiscard]] Status place_frame(std::int64_t pts_us, std::int64_t duration_us);
 };
 
 Status MediaExporter::Impl::open(const std::filesystem::path& path) {
@@ -73,6 +90,11 @@ Status MediaExporter::Impl::open(const std::filesystem::path& path) {
             codec = avcodec_find_encoder(AV_CODEC_ID_PNG);
             break;
         case ExportFormat::Gif:
+            muxer = "gif";
+            codec = avcodec_find_encoder(AV_CODEC_ID_GIF);
+            pix_fmt = AV_PIX_FMT_PAL8;
+            time_base = kCentis;
+            break;
         case ExportFormat::Mp4:
             return make_error(ErrorCode::UnsupportedFormat, "this export format is not available yet");
     }
@@ -124,6 +146,18 @@ Status MediaExporter::Impl::open(const std::filesystem::path& path) {
     if (rc < 0) {
         return ffmpeg_error(ErrorCode::InternalError, "av_frame_get_buffer", rc);
     }
+    if (format == ExportFormat::Gif) {
+        spare_frame.reset(av_frame_clone(frame.get()));
+        if (!spare_frame) {
+            return make_error(ErrorCode::InternalError, "av_frame_clone failed");
+        }
+        rc = av_frame_make_writable(spare_frame.get());  // gives the clone its own buffer
+        if (rc < 0) {
+            return ffmpeg_error(ErrorCode::InternalError, "av_frame_make_writable", rc);
+        }
+        quantizer = std::make_unique<Quantizer>();
+        gif_indices.resize(static_cast<std::size_t>(width) * height);
+    }
 
     rc = avio_open(&oc->pb, name.c_str(), AVIO_FLAG_WRITE);
     if (rc < 0) {
@@ -160,6 +194,9 @@ Status MediaExporter::Impl::encode(const AVFrame* f) {
             return ffmpeg_error(ErrorCode::EncodeError, "avcodec_receive_packet", rc);
         }
         pkt->stream_index = stream->index;
+        if (format == ExportFormat::Gif) {
+            pkt->duration = last_duration_cs;  // no reordering: this packet is the last frame
+        }
         av_packet_rescale_ts(pkt.get(), enc->time_base, stream->time_base);
         rc = av_interleaved_write_frame(oc.get(), pkt.get());  // unrefs the packet, even on error
         if (rc < 0) {
@@ -168,8 +205,37 @@ Status MediaExporter::Impl::encode(const AVFrame* f) {
     }
 }
 
+Status MediaExporter::Impl::place_frame(std::int64_t pts_us, std::int64_t duration_us) {
+    if (format == ExportFormat::Png) {
+        frame->pts = 0;  // a PNG has no timeline
+        return Status::success();
+    }
+    if (pts_us > std::numeric_limits<std::int64_t>::max() - duration_us) {
+        return make_error(ErrorCode::InvalidArgument, "pts_us + duration_us is out of range");
+    }
+    // GIF: round the cumulative times, not each duration, so rounding never drifts.
+    const std::int64_t start = av_rescale_q(pts_us, kMicros, kCentis);
+    const std::int64_t end = av_rescale_q(pts_us + duration_us, kMicros, kCentis);
+    const std::int64_t pts = std::max(start, last_pts_cs + 1);
+    last_pts_cs = pts;
+    last_duration_cs = std::max<std::int64_t>(1, end - pts);  // a 0 cs delay would mean "default"
+    frame->pts = pts;
+    frame->duration = last_duration_cs;
+    return Status::success();
+}
+
 void MediaExporter::Impl::fill_frame(const RgbaImage& image) {
-    const std::size_t row_bytes = static_cast<std::size_t>(width) * kBytesPerPixel;
+    const std::size_t w = width;
+    if (format == ExportFormat::Gif) {
+        quantizer->quantize(image.rgba.data(), w * height, gif_indices.data(), palette.data());
+        for (std::uint32_t y = 0; y < height; ++y) {
+            std::memcpy(frame->data[0] + static_cast<std::ptrdiff_t>(y) * frame->linesize[0],
+                        gif_indices.data() + y * w, w);
+        }
+        std::memcpy(frame->data[1], palette.data(), sizeof(std::uint32_t) * palette.size());
+        return;
+    }
+    const std::size_t row_bytes = w * kBytesPerPixel;
     for (std::uint32_t y = 0; y < height; ++y) {
         std::memcpy(frame->data[0] + static_cast<std::ptrdiff_t>(y) * frame->linesize[0],
                     image.rgba.data() + y * row_bytes, row_bytes);
@@ -193,12 +259,19 @@ Status MediaExporter::Impl::write_frame(const RgbaImage& image, std::int64_t pts
         return make_error(ErrorCode::InvalidArgument, "a PNG holds exactly one frame");
     }
 
+    // The GIF encoder still references the frame it was given last; writing into
+    // that one would make FFmpeg allocate a fresh buffer on every call.
+    if (spare_frame && av_frame_is_writable(frame.get()) == 0) {
+        std::swap(frame, spare_frame);
+    }
     int rc = av_frame_make_writable(frame.get());
     if (rc < 0) {
         return ffmpeg_error(ErrorCode::InternalError, "av_frame_make_writable", rc);
     }
+    if (Status placed = place_frame(pts_us, duration_us); !placed.ok()) {
+        return placed;
+    }
     fill_frame(image);
-    frame->pts = 0;  // a PNG has no timeline
     if (Status sent = encode(frame.get()); !sent.ok()) {
         return sent;
     }
