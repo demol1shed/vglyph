@@ -172,6 +172,7 @@ To prevent memory exhaustion and integer overflow on malformed or adversarial in
 - Reject total source pixel count `> 67,108,864` (64 megapixels).
 - Reject output grid sizes exceeding `cols > 2048` or `rows > 1024`, including an automatically derived `rows` (Section 4.1).
 - All buffer byte-size calculations (`width * height * channels`) MUST use checked 64-bit multiplication before allocation.
+- A frame's `pts_us` and `duration_us` MUST lie within `±2^51` microseconds (about 71 years); timestamps outside that, or that cannot be computed without overflow, are a `DecodeError`. Arithmetic on stream timestamps and seek targets is overflow-checked.
 
 ---
 
