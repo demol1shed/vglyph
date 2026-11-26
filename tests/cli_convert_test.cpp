@@ -350,7 +350,7 @@ VGLYPH_TEST(failures_use_the_documented_exit_codes_and_write_nothing) {
     VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(out), "-w", "3"}) == 2);       // out of range
     VGLYPH_CHECK(run_cli({"convert", utf8(dir.file("missing.png")), "-o", utf8(out)}) == 1);
     VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(dir.file("no-such-dir") / "out.txt")}) == 1);
-    VGLYPH_CHECK(run_cli({"play", utf8(in)}) == 2);  // play arrives in a later PR
+    VGLYPH_CHECK(run_cli({"play", utf8(in)}) == 2);  // the test runs without a terminal
     VGLYPH_CHECK(!fs::exists(out));
     VGLYPH_CHECK(!fs::exists(dir.file("out.gif")));
 }

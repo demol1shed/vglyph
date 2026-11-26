@@ -1,10 +1,10 @@
 #pragma once
 
-// Test-only writers for tiny PNG, GIF and MP4 files. Phase 4's MediaExporter
-// will replace them. PNG and MP4 go through FFmpeg's own encoders (no x264);
-// the GIF is written by hand so every frame delay is exact.
+// Test-only writers for tiny PNG, GIF and MP4 files, independent of
+// MediaExporter so that reader tests do not rest on the code under test. PNG and
+// MP4 go through FFmpeg's own encoders (no x264); the GIF is written by hand so
+// every frame delay is exact.
 
-#include <algorithm>
 #include <algorithm>
 #include <array>
 #include <chrono>
