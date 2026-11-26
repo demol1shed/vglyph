@@ -125,13 +125,27 @@ private:
 Status MediaReader::Impl::open(const std::filesystem::path& file) {
     path = file;
     const std::u8string u8 = file.u8string();
-    const std::string name(reinterpret_cast<const char*>(u8.data()), u8.size());
+    // Without "file:", FFmpeg reads "a:b.png" or "http://..." as a protocol URL.
+    const std::string name =
+        "file:" + std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
 
     // GIF delays are in centiseconds; FFmpeg replaces a 0 cs delay with
     // default_delay (100 ms) but passes 1 cs through, so emit_frame clamps
     // the rest. Other demuxers ignore the option.
     AVDictionary* raw_opts = nullptr;
     int rc = av_dict_set(&raw_opts, "min_delay", "1", 0);
+    if (rc < 0) {
+        const ffmpeg::DictPtr cleanup(raw_opts);
+        return ffmpeg_error(ErrorCode::InternalError, "av_dict_set", rc);
+    }
+    // Local files only (SPEC 1.3): demuxers that open further URLs get the same limit.
+    rc = av_dict_set(&raw_opts, "protocol_whitelist", "file", 0);
+    if (rc < 0) {
+        const ffmpeg::DictPtr cleanup(raw_opts);
+        return ffmpeg_error(ErrorCode::InternalError, "av_dict_set", rc);
+    }
+    // One file per path: image2 would read "a%d.png" as a numbered sequence.
+    rc = av_dict_set(&raw_opts, "pattern_type", "none", 0);
     if (rc < 0) {
         const ffmpeg::DictPtr cleanup(raw_opts);
         return ffmpeg_error(ErrorCode::InternalError, "av_dict_set", rc);
