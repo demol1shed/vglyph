@@ -449,7 +449,11 @@ void expect_frame_at(MediaReader& reader, std::int64_t seek_us, std::int64_t pts
                      std::int64_t duration_us, Rgb color, int tolerance) {
     VGLYPH_CHECK(reader.seek_us(seek_us).ok());
     VideoFrame frame;
-    VGLYPH_CHECK(next(reader, 8, 8, frame) == ReadStatus::Frame);
+    const ReadStatus status = next(reader, 8, 8, frame);
+    VGLYPH_CHECK(status == ReadStatus::Frame);
+    if (status != ReadStatus::Frame) {
+        return;  // there are no pixels to check
+    }
     if (frame.pts_us != pts_us || frame.duration_us != duration_us) {
         vglyph_test::out("  seek %lld: got pts %lld dur %lld, want pts %lld dur %lld\n",
                          static_cast<long long>(seek_us), static_cast<long long>(frame.pts_us),
@@ -620,48 +624,6 @@ VGLYPH_TEST(checked_add_and_sub_stop_at_the_int64_limits) {
     VGLYPH_CHECK(vglyph::checked_sub(INT64_MIN, INT64_MIN, out) && out == 0);
 }
 
-// An MPEG-TS clock is 33 bits wide, so times just below its end are read as
-// negative ones: an ordinary file whose stream starts before 0.
-VGLYPH_TEST(seek_works_on_a_stream_with_a_negative_start_time) {
-    const TempDir dir;
-    VGLYPH_CHECK(dir.ok());
-    const fs::path path = dir.file("wrapped.ts");
-    std::vector<FixtureFrame> frames(12);
-    for (std::size_t i = 0; i < frames.size(); ++i) {
-        frames[i] = FixtureFrame{solid_rgb(32, 32, kRed),
-                                 2'386'000 + static_cast<std::int64_t>(i), 1};
-    }
-    vglyph_test::FixtureSpec spec;
-    spec.codec_id = AV_CODEC_ID_MPEG2VIDEO;
-    spec.pix_fmt = AV_PIX_FMT_YUV420P;
-    spec.width = 32;
-    spec.height = 32;
-    spec.time_base = AVRational{1, 25};
-    VGLYPH_CHECK(fixture_ok(vglyph_test::write_ffmpeg_fixture(path, spec, frames)));
-
-    AVFormatContext* raw = nullptr;  // the test means nothing unless the start is negative
-    VGLYPH_CHECK(avformat_open_input(&raw, path.string().c_str(), nullptr, nullptr) >= 0);
-    if (raw == nullptr) {
-        return;
-    }
-    VGLYPH_CHECK(avformat_find_stream_info(raw, nullptr) >= 0);
-    VGLYPH_CHECK(raw->nb_streams == 1 && raw->streams[0]->start_time < 0);
-    avformat_close_input(&raw);
-
-    auto opened = MediaReader::open(path);
-    VGLYPH_CHECK(opened.ok());
-    MediaReader* reader = opened.value_if();
-    if (reader == nullptr) {
-        return;
-    }
-    VideoFrame frame;
-    VGLYPH_CHECK(next(*reader, 8, 8, frame) == ReadStatus::Frame && frame.pts_us == 0);
-    // Only that the targets are accepted: which frame follows a seek in MPEG-TS
-    // is inaccurate whatever the start time.
-    VGLYPH_CHECK(reader->seek_us(100'000).ok());
-    VGLYPH_CHECK(reader->seek_us(0).ok());
-}
-
 VGLYPH_TEST(frame_times_outside_the_bound_are_decode_errors) {
     const TempDir dir;
     VGLYPH_CHECK(dir.ok());
@@ -697,6 +659,60 @@ VGLYPH_TEST(frame_times_outside_the_bound_are_decode_errors) {
             VGLYPH_CHECK(second.error_if() != nullptr &&
                          second.error_if()->code == ErrorCode::DecodeError);
         }
+    }
+}
+
+// ---- MPEG-TS seeking ----------------------------------------------------------
+
+// The demuxer can only seek to a byte position, so it often lands between two
+// keyframes (here every 12th frame) and the reader has to start over.
+VGLYPH_TEST(ts_seek_returns_the_frame_covering_the_target) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const std::array<Rgb, 3> colors{kRed, kGreen, kBlue};
+    // An MPEG-TS clock is 33 bits wide, so times just below its end are read as
+    // negative ones: an ordinary file whose stream starts before 0.
+    for (const std::int64_t first_pts : {std::int64_t{0}, std::int64_t{2'386'000}}) {
+        const fs::path path = dir.file("seek.ts");
+        std::vector<FixtureFrame> frames(40);
+        for (std::size_t i = 0; i < frames.size(); ++i) {
+            frames[i] = FixtureFrame{solid_rgb(32, 32, colors[i % colors.size()]),
+                                     first_pts + static_cast<std::int64_t>(i), 1};
+        }
+        vglyph_test::FixtureSpec spec;
+        spec.codec_id = AV_CODEC_ID_MPEG2VIDEO;
+        spec.pix_fmt = AV_PIX_FMT_YUV420P;
+        spec.width = 32;
+        spec.height = 32;
+        spec.time_base = AVRational{1, 25};
+        VGLYPH_CHECK(fixture_ok(vglyph_test::write_ffmpeg_fixture(path, spec, frames)));
+
+        AVFormatContext* raw = nullptr;  // the wrapped case means nothing unless the start is negative
+        VGLYPH_CHECK(avformat_open_input(&raw, path.string().c_str(), nullptr, nullptr) >= 0);
+        if (raw == nullptr) {
+            return;
+        }
+        VGLYPH_CHECK(avformat_find_stream_info(raw, nullptr) >= 0);
+        VGLYPH_CHECK(raw->nb_streams == 1 && (raw->streams[0]->start_time < 0) == (first_pts > 0));
+        avformat_close_input(&raw);
+
+        std::optional<MediaReader> reader;
+        open_ok(path, reader);
+        if (!reader) {
+            return;
+        }
+        expect_frame_at(*reader, 100'000, 80'000, 40'000, kBlue, 40);       // before the 2nd keyframe
+        expect_frame_at(*reader, 1'000'000, 1'000'000, 40'000, kGreen, 40);  // between keyframes
+        expect_frame_at(*reader, 1'560'000, 1'560'000, 40'000, kRed, 40);    // no keyframe after it
+        expect_frame_at(*reader, 0, 0, 40'000, kRed, 40);
+
+        VideoFrame frame;
+        VGLYPH_CHECK(next(*reader, 8, 8, frame) == ReadStatus::Frame && frame.pts_us == 40'000);
+
+        VGLYPH_CHECK(reader->seek_us(10'000'000).ok());
+        VGLYPH_CHECK(next(*reader, 8, 8, frame) == ReadStatus::EndOfStream);
+        VGLYPH_CHECK(next(*reader, 8, 8, frame) == ReadStatus::EndOfStream);
+        expect_frame_at(*reader, 0, 0, 40'000, kRed, 40);
     }
 }
 
