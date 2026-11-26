@@ -93,6 +93,13 @@ void blend_over(std::uint8_t* rgba, std::size_t pixels, Rgb bg) noexcept {
     }
 }
 
+// What became of a decoded frame.
+enum class Emitted {
+    Frame,      // scaled into the caller's frame
+    Skipped,    // ends at or before the seek target
+    Mislanded,  // the first frame after a demuxer seek shows that the seek cannot be used
+};
+
 }  // namespace
 
 struct MediaReader::Impl {
@@ -113,6 +120,7 @@ struct MediaReader::Impl {
     bool is_gif = false;                   // frame times come from the clamped delays, not the demuxer
     bool draining = false;                 // the decoder was told the input ended
     std::int64_t skip_before_us = kNoSkip; // after a seek: drop frames ending at or before this
+    bool seek_unverified = false;          // a demuxer seek has not led to a usable frame yet
 
     [[nodiscard]] Status open(const std::filesystem::path& file);
     [[nodiscard]] Result<ReadStatus> read_frame(std::uint32_t width, std::uint32_t height,
@@ -123,9 +131,11 @@ private:
     [[nodiscard]] std::int64_t to_us(std::int64_t ts) const noexcept {
         return av_rescale_q(ts, time_base, kMicros);
     }
-    // True when the frame was scaled into `out`; false when a seek skipped it.
-    [[nodiscard]] Result<bool> emit_frame(std::uint32_t width, std::uint32_t height,
-                                          std::uint64_t bytes, VideoFrame& out, Rgb background);
+    // Scales the decoded frame into `out`, unless a seek rules it out.
+    [[nodiscard]] Result<Emitted> emit_frame(std::uint32_t width, std::uint32_t height,
+                                             std::uint64_t bytes, VideoFrame& out, Rgb background);
+    // Reopens the file, so that reading decodes forward from its first frame to `target_us`.
+    [[nodiscard]] Status reopen_for(std::int64_t target_us);
     // Converts the current frame to RGBA at its own size into `rgba` and blends it over `background`.
     [[nodiscard]] Status flatten_alpha(Rgb background);
 };
@@ -254,26 +264,35 @@ Result<ReadStatus> MediaReader::Impl::read_frame(std::uint32_t width, std::uint3
     for (;;) {
         int rc = avcodec_receive_frame(dec.get(), frame.get());
         if (rc == 0) {
-            const Result<bool> emitted = emit_frame(width, height, bytes, out, background);
+            const Result<Emitted> emitted = emit_frame(width, height, bytes, out, background);
             if (const Error* error = emitted.error_if()) {
                 return *error;
             }
-            if (*emitted.value_if()) {
+            if (*emitted.value_if() == Emitted::Frame) {
                 return ReadStatus::Frame;
             }
-            continue;  // skipped on the way to a seek target
+            if (*emitted.value_if() == Emitted::Mislanded) {
+                if (Status reopened = reopen_for(skip_before_us); !reopened.ok()) {
+                    return reopened.error();
+                }
+            }
+            continue;
         }
-        if (rc == AVERROR_EOF) {
-            return ReadStatus::EndOfStream;
+        if (rc == AVERROR_EOF || (rc == AVERROR(EAGAIN) && draining)) {
+            if (!seek_unverified) {
+                return ReadStatus::EndOfStream;
+            }
+            // The seek landed where nothing more can be decoded.
+            if (Status reopened = reopen_for(skip_before_us); !reopened.ok()) {
+                return reopened.error();
+            }
+            continue;
         }
         if (rc != AVERROR(EAGAIN)) {
             return ffmpeg_error(ErrorCode::DecodeError, "avcodec_receive_frame", rc);
         }
 
         // The decoder wants more input.
-        if (draining) {
-            return ReadStatus::EndOfStream;
-        }
         rc = av_read_frame(fmt.get(), pkt.get());
         if (rc == AVERROR_EOF) {
             rc = avcodec_send_packet(dec.get(), nullptr);  // start draining
@@ -331,8 +350,9 @@ Status MediaReader::Impl::flatten_alpha(Rgb background) {
     return Status::success();
 }
 
-Result<bool> MediaReader::Impl::emit_frame(std::uint32_t width, std::uint32_t height,
-                                           std::uint64_t bytes, VideoFrame& out, Rgb background) {
+Result<Emitted> MediaReader::Impl::emit_frame(std::uint32_t width, std::uint32_t height,
+                                              std::uint64_t bytes, VideoFrame& out,
+                                              Rgb background) {
     const ffmpeg::FrameUnref release(frame.get());
     if (Status size = check_source_size(frame->width, frame->height); !size.ok()) {
         return size.error();  // the stream changed size mid-way
@@ -360,13 +380,22 @@ Result<bool> MediaReader::Impl::emit_frame(std::uint32_t width, std::uint32_t he
             return frame_time_out_of_range();
         }
     }
+    // A demuxer seek is used only if it leads to a keyframe at or before the
+    // target. MPEG-TS seeks to a byte position, which can be past the target or
+    // between keyframes, where the decoder shows damaged pictures.
+    if (seek_unverified) {
+        if ((frame->flags & AV_FRAME_FLAG_KEY) == 0 || pts_us > skip_before_us) {
+            return Emitted::Mislanded;
+        }
+        seek_unverified = false;
+    }
     next_pts_us = pts_us + duration_us;
 
     // A frame without a duration covers just its own timestamp.
     const std::int64_t end_us = pts_us + (duration_us > 0 ? duration_us : 1);
     if (skip_before_us != kNoSkip) {
         if (end_us <= skip_before_us) {
-            return false;
+            return Emitted::Skipped;
         }
         skip_before_us = kNoSkip;
     }
@@ -419,7 +448,7 @@ Result<bool> MediaReader::Impl::emit_frame(std::uint32_t width, std::uint32_t he
     }
     out.pts_us = pts_us;
     out.duration_us = duration_us;
-    return true;
+    return Emitted::Frame;
 }
 
 Status MediaReader::Impl::seek_us(std::int64_t target_us) {
@@ -443,14 +472,23 @@ Status MediaReader::Impl::seek_us(std::int64_t target_us) {
         }
     }
     if (!repositioned) {
-        Impl fresh;
-        if (Status reopened = fresh.open(path); !reopened.ok()) {
-            return reopened;
-        }
-        *this = std::move(fresh);
+        return reopen_for(target_us);
     }
+    seek_unverified = true;
     skip_before_us = target_us;
     next_pts_us = 0;
+    return Status::success();
+}
+
+// shortcut: decoding from the start is slow for a late target in a long file;
+// upgrade by first retrying the demuxer seek further back.
+Status MediaReader::Impl::reopen_for(std::int64_t target_us) {
+    Impl fresh;
+    if (Status reopened = fresh.open(path); !reopened.ok()) {
+        return reopened;
+    }
+    fresh.skip_before_us = target_us;
+    *this = std::move(fresh);
     return Status::success();
 }
 

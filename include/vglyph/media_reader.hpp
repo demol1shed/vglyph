@@ -82,9 +82,11 @@ public:
     // Repositions so that the next read_frame() returns the frame covering
     // `target_us` (pts <= target < pts + duration), or EndOfStream when the
     // target is past the last frame. Seeks to the nearest earlier keyframe,
-    // then decodes forward without scaling the skipped frames; where the
-    // container cannot seek (still images, some formats) it reopens the file
-    // and decodes forward from the start. A still image has one frame at 0.
+    // then decodes forward without scaling the skipped frames. Where the
+    // container cannot seek (still images, some formats), or its seek does not
+    // lead to a keyframe at or before the target (MPEG-TS), it reopens the file
+    // and decodes forward from the start, which takes longer the later the
+    // target is. A still image has one frame at 0.
     // A negative target is InvalidArgument.
     [[nodiscard]] Status seek_us(std::int64_t target_us);
 
