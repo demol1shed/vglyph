@@ -4,6 +4,7 @@
 #include <optional>
 #include <vector>
 
+#include "checked_math.hpp"
 #include "media_fixture.hpp"
 #include "test_framework.hpp"
 #include "vglyph/convert.hpp"
@@ -601,6 +602,102 @@ VGLYPH_TEST(set_media_log_quiet_silences_ffmpeg) {
     av_log_set_level(AV_LOG_INFO);
     vglyph::set_media_log_quiet();
     VGLYPH_CHECK(av_log_get_level() == AV_LOG_QUIET);
+}
+
+// ---- Extreme timestamps -------------------------------------------------------
+
+VGLYPH_TEST(checked_add_and_sub_stop_at_the_int64_limits) {
+    std::int64_t out = 7;
+    VGLYPH_CHECK(!vglyph::checked_add(INT64_MAX, 1, out));
+    VGLYPH_CHECK(!vglyph::checked_add(INT64_MIN, -1, out));
+    VGLYPH_CHECK(!vglyph::checked_sub(INT64_MIN, 1, out));
+    VGLYPH_CHECK(!vglyph::checked_sub(INT64_MAX, -1, out));
+    VGLYPH_CHECK(!vglyph::checked_sub(0, INT64_MIN, out));
+    VGLYPH_CHECK(out == 7);  // untouched on failure
+    VGLYPH_CHECK(vglyph::checked_add(INT64_MIN, INT64_MAX, out) && out == -1);
+    VGLYPH_CHECK(vglyph::checked_add(INT64_MAX, 0, out) && out == INT64_MAX);
+    VGLYPH_CHECK(vglyph::checked_sub(-1, INT64_MIN, out) && out == INT64_MAX);
+    VGLYPH_CHECK(vglyph::checked_sub(INT64_MIN, INT64_MIN, out) && out == 0);
+}
+
+// An MPEG-TS clock is 33 bits wide, so times just below its end are read as
+// negative ones: an ordinary file whose stream starts before 0.
+VGLYPH_TEST(seek_works_on_a_stream_with_a_negative_start_time) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const fs::path path = dir.file("wrapped.ts");
+    std::vector<FixtureFrame> frames(12);
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        frames[i] = FixtureFrame{solid_rgb(32, 32, kRed),
+                                 2'386'000 + static_cast<std::int64_t>(i), 1};
+    }
+    vglyph_test::FixtureSpec spec;
+    spec.codec_id = AV_CODEC_ID_MPEG2VIDEO;
+    spec.pix_fmt = AV_PIX_FMT_YUV420P;
+    spec.width = 32;
+    spec.height = 32;
+    spec.time_base = AVRational{1, 25};
+    VGLYPH_CHECK(fixture_ok(vglyph_test::write_ffmpeg_fixture(path, spec, frames)));
+
+    AVFormatContext* raw = nullptr;  // the test means nothing unless the start is negative
+    VGLYPH_CHECK(avformat_open_input(&raw, path.string().c_str(), nullptr, nullptr) >= 0);
+    if (raw == nullptr) {
+        return;
+    }
+    VGLYPH_CHECK(avformat_find_stream_info(raw, nullptr) >= 0);
+    VGLYPH_CHECK(raw->nb_streams == 1 && raw->streams[0]->start_time < 0);
+    avformat_close_input(&raw);
+
+    auto opened = MediaReader::open(path);
+    VGLYPH_CHECK(opened.ok());
+    MediaReader* reader = opened.value_if();
+    if (reader == nullptr) {
+        return;
+    }
+    VideoFrame frame;
+    VGLYPH_CHECK(next(*reader, 8, 8, frame) == ReadStatus::Frame && frame.pts_us == 0);
+    // Only that the targets are accepted: which frame follows a seek in MPEG-TS
+    // is inaccurate whatever the start time.
+    VGLYPH_CHECK(reader->seek_us(100'000).ok());
+    VGLYPH_CHECK(reader->seek_us(0).ok());
+}
+
+VGLYPH_TEST(frame_times_outside_the_bound_are_decode_errors) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const std::int64_t last_ok_ms = vglyph::kMaxFrameTimeUs / 1000;
+    // The last millisecond inside the bound, the first one outside it, and one
+    // that does not even fit in 64-bit microseconds.
+    for (const std::int64_t second_ms :
+         {last_ok_ms, last_ok_ms + 1, std::int64_t{9'300'000'000'000'000}}) {
+        const fs::path path = dir.file("far.mkv");
+        std::vector<FixtureFrame> frames(2);
+        frames[0] = FixtureFrame{solid_rgb(8, 8, kRed), 0, 100};
+        frames[1] = FixtureFrame{solid_rgb(8, 8, kRed), second_ms, 100};
+        vglyph_test::FixtureSpec spec;
+        spec.codec_id = AV_CODEC_ID_PNG;  // unlike video encoders, takes any gap between frames
+        spec.pix_fmt = AV_PIX_FMT_RGB24;
+        spec.width = 8;
+        spec.height = 8;
+        spec.time_base = AVRational{1, 1000};
+        VGLYPH_CHECK(fixture_ok(vglyph_test::write_ffmpeg_fixture(path, spec, frames)));
+
+        auto opened = MediaReader::open(path);
+        VGLYPH_CHECK(opened.ok());
+        MediaReader* reader = opened.value_if();
+        if (reader == nullptr) {
+            return;
+        }
+        VideoFrame frame;
+        VGLYPH_CHECK(reader->read_frame(8, 8, frame, Rgb{}).ok());
+        const auto second = reader->read_frame(8, 8, frame, Rgb{});
+        if (second_ms == last_ok_ms) {
+            VGLYPH_CHECK(second.ok() && frame.pts_us == last_ok_ms * 1000);
+        } else {
+            VGLYPH_CHECK(second.error_if() != nullptr &&
+                         second.error_if()->code == ErrorCode::DecodeError);
+        }
+    }
 }
 
 VGLYPH_TEST_MAIN()

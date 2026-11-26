@@ -131,7 +131,7 @@ target_include_directories(vglyph-ffmpeg_error-test PRIVATE src/media)
 
 # Builds fixtures with FFmpeg's encoders, so it needs FFmpeg's headers directly.
 add_vglyph_test(media_reader)
-target_include_directories(vglyph-media_reader-test PRIVATE src/media)
+target_include_directories(vglyph-media_reader-test PRIVATE src/media src/core)
 target_link_libraries(vglyph-media_reader-test PRIVATE vglyph-ffmpeg)
 
 # Round-trips the exporters through MediaReader; also tests the internal quantizer.
