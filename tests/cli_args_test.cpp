@@ -95,6 +95,53 @@ VGLYPH_TEST(unfinished_features_are_rejected_as_not_implemented) {
     VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.txt", "--dither", "floyd"}), "not implemented"));
 }
 
+VGLYPH_TEST(visual_formats_come_from_flag_or_extension) {
+    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "o.png"})).format == OutputFormat::Png);
+    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "o.GIF"})).format == OutputFormat::Gif);
+    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "o.mp4"})).format == OutputFormat::Mp4);
+    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "o.dat", "--format", "png"})).format == OutputFormat::Png);
+    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "o.txt", "--format", "gif"})).format == OutputFormat::Gif);
+    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "o", "--format=mp4"})).format == OutputFormat::Mp4);
+    for (const std::string_view format : {"png", "gif", "mp4"}) {
+        VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "-", "--format", format}), "only txt or ans"));
+    }
+}
+
+VGLYPH_TEST(export_options_have_defaults_and_accept_their_ranges) {
+    const CliOptions d = ok(parse({"convert", "a", "-o", "o.mp4"}));
+    VGLYPH_CHECK(!d.font.has_value() && d.font_px == 16 && d.crf == 20 && !d.aspect_given);
+
+    const CliOptions o = ok(parse({"convert", "a", "-o", "o.mp4", "--font", "f.ttf", "--font-size", "8",
+                                   "--crf", "0", "--aspect", "0.5"}));
+    VGLYPH_CHECK(o.font.has_value() && *o.font == "f.ttf");
+    VGLYPH_CHECK(o.font_px == 8 && o.crf == 0 && o.aspect_given);
+    const CliOptions top = ok(parse({"convert", "a", "-o", "o.mp4", "--font-size=64", "--crf=51"}));
+    VGLYPH_CHECK(top.font_px == 64 && top.crf == 51);
+
+    for (const std::string_view bad : {"--font-size=7", "--font-size=65", "--font-size=x", "--crf=-1",
+                                       "--crf=52", "--crf=", "--font="}) {
+        VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.mp4", bad}), "invalid value"));
+    }
+}
+
+VGLYPH_TEST(export_options_are_limited_to_their_formats) {
+    VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.txt", "--font", "f.ttf"}), "--font"));
+    VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.ans", "--font-size", "16"}), "--font"));
+    // The same when the format is named after the option.
+    VGLYPH_CHECK(usage_error(parse({"convert", "a", "--font", "f.ttf", "-o", "o.txt"}), "--font"));
+    for (const std::string_view out : {"o.txt", "o.png", "o.gif"}) {
+        VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", out, "--crf", "20"}), "--crf"));
+    }
+    // An explicit --frame 0 is still a --frame.
+    VGLYPH_CHECK(usage_error(parse({"convert", "a", "--frame", "0", "-o", "o.gif"}), "--frame"));
+    VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.mp4", "--frame", "1"}), "--frame"));
+    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "o.png", "--frame", "1"})).frame_index == 1);
+
+    for (const std::string_view option : {"--font", "--font-size", "--crf"}) {
+        VGLYPH_CHECK(usage_error(parse({"play", "a", option, "1"}), "unknown option"));
+    }
+}
+
 VGLYPH_TEST(structural_errors) {
     VGLYPH_CHECK(usage_error(parse({}), "missing command"));
     VGLYPH_CHECK(usage_error(parse({"bogus"}), "unknown command"));
