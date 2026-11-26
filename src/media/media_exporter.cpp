@@ -132,7 +132,9 @@ Status MediaExporter::Impl::open(const std::filesystem::path& path) {
     }
 
     const std::u8string u8 = path.u8string();
-    const std::string name(reinterpret_cast<const char*>(u8.data()), u8.size());
+    // Without "file:", FFmpeg writes "a:b.png" or "http://..." through that protocol.
+    const std::string name =
+        "file:" + std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
     AVFormatContext* raw_oc = nullptr;
     int rc = avformat_alloc_output_context2(&raw_oc, nullptr, muxer, name.c_str());
     if (rc < 0) {
