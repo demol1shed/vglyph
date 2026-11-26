@@ -114,6 +114,24 @@ jobs:
           & $exe convert $png -o - -w 8 | Out-Null
           Check ($LASTEXITCODE -eq 0) "convert to stdout"
 
+          # A UTF-8 output name; the second run replaces the first run's file.
+          $outPng = Join-Path $env:RUNNER_TEMP ("r" + [char]0x00E7 + ".png")
+          foreach ($run in 1, 2) {
+            & $exe convert $png -o $outPng -w 8
+            Check ($LASTEXITCODE -eq 0 -and (Test-Path $outPng)) "convert to png, run $run"
+          }
+
+          $gif = Join-Path $env:RUNNER_TEMP "in.gif"
+          $bmp = New-Object System.Drawing.Bitmap 16, 16
+          $bmp.Save($gif, [System.Drawing.Imaging.ImageFormat]::Gif)
+          $bmp.Dispose()
+          $mp4 = Join-Path $env:RUNNER_TEMP ("v" + [char]0x00E7 + ".mp4")
+          & $exe convert $gif -o $mp4 -w 8
+          Check ($LASTEXITCODE -eq 0) "convert to mp4"
+          $info = (& $exe info $mp4) -join "`n"
+          Check ($LASTEXITCODE -eq 0 -and $info -match "codec: h264") "info on the mp4"
+          Check (-not (Test-Path "$mp4.vglyph-tmp")) "no temporary file is left"
+
           & $exe play $png 2>$null
           Check ($LASTEXITCODE -eq 2) "play without a console exits 2 (got $LASTEXITCODE)"
 
