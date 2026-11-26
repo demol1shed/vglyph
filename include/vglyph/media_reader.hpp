@@ -33,6 +33,11 @@ struct MediaInfo {
     int audio_stream_index = -1;     // v2 passthrough hook; no audio decoder is opened
 };
 
+// Bound on the magnitude of every VideoFrame::pts_us and duration_us (about 71
+// years), so that callers can add and subtract them, also as nanoseconds,
+// without overflow. A frame outside it is a DecodeError.
+inline constexpr std::int64_t kMaxFrameTimeUs = std::int64_t{1} << 51;
+
 // One decoded frame, scaled to the requested size as tightly packed RGB24.
 // The caller owns it and passes the same object to every read_frame() call:
 // `rgb24` is resized only when the requested size changes.
@@ -64,7 +69,8 @@ public:
     // Decodes the next frame and scales it (SWS_AREA) to width x height, which
     // is normally GridSize::sample_w x sample_h. Returns EndOfStream, and keeps
     // returning it, once every frame was read. A zero or oversized width/height
-    // is InvalidArgument and consumes no frame.
+    // is InvalidArgument and consumes no frame. A frame time outside
+    // kMaxFrameTimeUs is a DecodeError.
     //
     // A source with an alpha channel (PNG with transparency, GIF with a
     // transparent index, ...) is composited over `background` at the source

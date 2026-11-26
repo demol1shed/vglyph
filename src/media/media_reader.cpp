@@ -64,6 +64,14 @@ constexpr std::int64_t kNoSkip = std::numeric_limits<std::int64_t>::min();
 constexpr std::int64_t kGifMaxQuirkDelayUs = 10'000;
 constexpr std::int64_t kGifDefaultDelayUs = 100'000;
 
+[[nodiscard]] bool is_frame_time(std::int64_t us) noexcept {
+    return us >= -kMaxFrameTimeUs && us <= kMaxFrameTimeUs;
+}
+
+[[nodiscard]] Error frame_time_out_of_range() {
+    return make_error(ErrorCode::DecodeError, "frame timestamp is out of range");
+}
+
 // Added to every swscale flag set. Without it the x86 same-size yuv -> RGB
 // converters leave the last columns unwritten for some widths and write up to
 // 60 bytes past a tightly packed destination, which `rgb24` and `rgba` are.
@@ -330,20 +338,27 @@ Result<bool> MediaReader::Impl::emit_frame(std::uint32_t width, std::uint32_t he
         return size.error();  // the stream changed size mid-way
     }
 
-    std::int64_t pts_us = next_pts_us;
-    // A GIF's frames are back to back, so its timeline is the sum of the clamped
-    // delays; the demuxer's timestamps would still advance by 10 ms per frame.
-    // (Its seek always restarts at the first frame, where next_pts_us is 0.)
-    if (!is_gif && frame->best_effort_timestamp != AV_NOPTS_VALUE) {
-        pts_us = to_us(frame->best_effort_timestamp - start_ts);
-    }
-    std::int64_t duration_us = frame->duration > 0 ? to_us(frame->duration) : fallback_duration_us;
-    if (is_gif && duration_us <= kGifMaxQuirkDelayUs) {
-        duration_us = kGifDefaultDelayUs;
-    }
-    if (info.media_kind == MediaKind::Image) {
-        pts_us = 0;
-        duration_us = 0;
+    std::int64_t pts_us = 0;  // a still image has no timeline
+    std::int64_t duration_us = 0;
+    if (info.media_kind != MediaKind::Image) {
+        pts_us = next_pts_us;
+        // A GIF's frames are back to back, so its timeline is the sum of the clamped
+        // delays; the demuxer's timestamps would still advance by 10 ms per frame.
+        // (Its seek always restarts at the first frame, where next_pts_us is 0.)
+        if (!is_gif && frame->best_effort_timestamp != AV_NOPTS_VALUE) {
+            std::int64_t since_start = 0;
+            if (!checked_sub(frame->best_effort_timestamp, start_ts, since_start)) {
+                return frame_time_out_of_range();
+            }
+            pts_us = to_us(since_start);  // INT64_MIN, so out of range, if it does not fit
+        }
+        duration_us = frame->duration > 0 ? to_us(frame->duration) : fallback_duration_us;
+        if (is_gif && duration_us <= kGifMaxQuirkDelayUs) {
+            duration_us = kGifDefaultDelayUs;
+        }
+        if (!is_frame_time(pts_us) || !is_frame_time(duration_us)) {
+            return frame_time_out_of_range();
+        }
     }
     next_pts_us = pts_us + duration_us;
 
@@ -416,12 +431,12 @@ Status MediaReader::Impl::seek_us(std::int64_t target_us) {
     if (info.media_kind != MediaKind::Image) {
         // Round down: rounding up could land on a keyframe just after the target.
         const std::int64_t ts = av_rescale_q_rnd(target_us, kMicros, time_base, AV_ROUND_DOWN);
-        if (ts == std::numeric_limits<std::int64_t>::min() ||
-            ts > std::numeric_limits<std::int64_t>::max() - start_ts) {
+        std::int64_t stream_ts = 0;
+        if (ts == std::numeric_limits<std::int64_t>::min() || !checked_add(ts, start_ts, stream_ts)) {
             return make_error(ErrorCode::InvalidArgument, "seek target is out of range");
         }
         // A failed seek leaves the demuxer where it was; the reopen below recovers.
-        repositioned = av_seek_frame(fmt.get(), video_index, ts + start_ts, AVSEEK_FLAG_BACKWARD) >= 0;
+        repositioned = av_seek_frame(fmt.get(), video_index, stream_ts, AVSEEK_FLAG_BACKWARD) >= 0;
         if (repositioned) {
             avcodec_flush_buffers(dec.get());  // also clears the end-of-stream drain state
             draining = false;
