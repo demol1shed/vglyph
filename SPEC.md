@@ -155,10 +155,11 @@ If `invert == true`, luminance becomes $Y' = 1 - Y$.
 ## 5. Media Decoding Layer (FFmpeg `MediaReader`)
 
 ### 5.1 Single-Door Pipeline
-1. Open input with `avformat_open_input` and probe streams with `avformat_find_stream_info`.
+1. Open input with `avformat_open_input` and probe streams with `avformat_find_stream_info`. In the reader and the exporters a path always names one local file: it is opened through FFmpeg's `file` protocol only, never as a URL or an image-sequence pattern.
 2. Locate best video/image stream (`av_find_best_stream(AVMEDIA_TYPE_VIDEO)`). Optionally record best audio stream index in `MediaInfo` without opening an audio decoder in v1.
 3. Open matched decoder (`avcodec_find_decoder`, `avcodec_open2`) with multi-threaded decoding enabled where supported for video streams.
 4. Allocate reusable `AVPacket`, decoded `AVFrame`, and scaled `RGB24` target buffer. Create/recreate `SwsContext` lazily only when source format or target grid dimensions change.
+5. A frame whose pixel format has an alpha channel is converted to RGBA at its own size and blended over the caller's background color (`config.bg_color`) before it is scaled, so the hidden color of transparent pixels never reaches the grid.
 
 ### 5.2 Frame Timing & Seeking
 - Convert packet/frame `pts` and `duration` from stream `time_base` to microseconds using `av_rescale_q`.
@@ -200,13 +201,13 @@ To prevent memory exhaustion and integer overflow on malformed or adversarial in
 
 ### 7.1 Glyph Atlas Rasterizer (`stb_truetype`)
 - **Default Font:** *JetBrains Mono* Regular (SIL OFL), embedded directly into `vglyph-core` so visual export works out of the box with zero external asset lookup.
-- **Custom Font Support:** Users may supply a local TrueType (`.ttf`) path and a target font pixel height (`8..64 px`, default `16 px`). CFF-based `.otf` files are not supported in v1; if `stb_truetype` cannot load the file, initialization fails with `FontError`.
+- **Custom Font Support:** Users may supply a local TrueType (`.ttf`) path and a target font pixel height (`8..64 px`, default `16 px`). CFF-based `.otf` files are not supported in v1; if `stb_truetype` cannot load the file, initialization fails with `FontError`. The CLI reads at most 16 MiB of font data (`LimitExceeded` above that); a path that is not a readable regular file is `IoError`. Custom fonts must come from a trusted source: `stb_truetype` does not range-check the offsets inside a font file, so a crafted font can make it read out of bounds. The size cap does not protect against this.
 - **Atlas Caching:** On font/size initialization, query exact monospace metrics (`advance_width`, `ascent`, `descent`, `line_gap`) to determine uniform `cell_px_w` and `cell_px_h`. Pre-rasterize all glyphs in the active ramp into an 8-bit coverage atlas. If any codepoint of the active charset has no glyph in the font, atlas creation fails with `FontError` and the missing codepoint is named in `detail`; there is no fallback glyph.
 - **Frame Rasterization (`AsciiFrame` → `RGBA32`):**
   - Fill cell background with `cell.bg`.
   - For `HalfBlock` (`▀`), fill top half with `cell.fg` and bottom half with `cell.bg` directly (pixel-sharp, bypassing font hinting).
   - For character glyphs, alpha-blend the cached 8-bit glyph bitmap over `cell.bg` using `cell.fg`.
-  - Output pixel dimensions: `out_w = cols * cell_px_w`, `out_h = rows * cell_px_h`.
+  - Output pixel dimensions: `out_w = cols * cell_px_w`, `out_h = rows * cell_px_h`. An output over 16384 pixels on either axis or over 67,108,864 pixels (64 megapixels) fails with `LimitExceeded` before anything is allocated.
 
 ### 7.2 Visual & Video Exporters (FFmpeg `libavcodec` / `libavformat`)
 | Output Format | Applicable Inputs | Encoding Strategy |
@@ -215,12 +216,18 @@ To prevent memory exhaustion and integer overflow on malformed or adversarial in
 | **`.gif`** | Animated GIF or video | Two-pass or streaming 256-color palette quantization (`AV_CODEC_ID_GIF`) preserving original frame delays (clamped to GIF centisecond resolution `1/100s`); output loops forever (NETSCAPE loop count `0`) |
 | **`.mp4`** | Animated GIF or video | H.264 via `libx264` (`AV_PIX_FMT_YUV420P`, configurable CRF default `20`, `+faststart`). Automatically pads odd `out_w` or `out_h` by 1 pixel with `config.bg_color` to satisfy `yuv420p` even-dimension requirement |
 
+- **Inputs:** `.gif` or `.mp4` output from a still photo is `InvalidArgument`.
+- **Cell Shape:** Unless the user sets `cell_aspect`, visual export uses the active font's `cell_px_w / cell_px_h`.
+- **Streaming:** Frames are read, converted, rasterized, and encoded one at a time into reused buffers.
+- **Frame Times (`.gif`, `.mp4`):** Times are shifted so the first frame starts at `0`; a frame time that does not increase, or an input without video frames, is `DecodeError`. `.mp4` keeps variable frame times in microseconds; `.gif` rounds cumulative times to centiseconds, and every frame advances by at least one.
+- **Output Safety:** The export is written to `<output>.vglyph-tmp` beside the output and renamed over it only after the encoder finishes. A failed or interrupted export removes the temporary file and leaves an existing output untouched, so the output may be the input. If the temporary file already exists, the export fails with `IoError`; it is never overwritten.
+
 ---
 
 ## 8. CLI Specification (`vglyph`)
 
 ### 8.1 Subcommands
-- `vglyph convert <input> -o <output> [options]` — Convert photo, GIF, or video to `.txt`, `.ans`, `.png`, `.gif`, or `.mp4` (inferred from `<output>` extension or overridden via `--format`). `-o -` writes to `stdout` instead of a file; without `--format` it writes `.ans`, so use `--format txt` for plain text.
+- `vglyph convert <input> -o <output> [options]` — Convert photo, GIF, or video to `.txt`, `.ans`, `.png`, `.gif`, or `.mp4` (inferred from `<output>` extension or overridden via `--format`). `-o -` writes to `stdout` instead of a file; without `--format` it writes `.ans`, so use `--format txt` for plain text. `.png`, `.gif`, and `.mp4` need a file: `-o -` with them is `InvalidArgument` (exit `2`).
 - `vglyph play <input> [options]` — Play photo, GIF, or video directly in the terminal with TrueColor ANSI rendering.
 - `vglyph info <input>` — Print structured media metadata (`MediaInfo`) to `stdout`, one `key: value` line per field in this order: `kind`, `width`, `height`, `pixel_format`, `codec`, `fps`, `duration_us`, `has_audio`.
 - `vglyph --version` / `vglyph --help` — Print version/GPLv3 notice or usage help.
@@ -230,7 +237,7 @@ To prevent memory exhaustion and integer overflow on malformed or adversarial in
 | :--- | :--- | :--- | :--- |
 | `-w, --width <cols>` | `4..2048` (fitted to the terminal in `play`, `100` in `convert`) | `convert`, `play` | Output grid width in cells |
 | `-H, --height <rows>` | `0` (auto) | `convert`, `play` | Explicit grid height |
-| `--aspect <float>` | `0.5` | `convert`, `play` | Override cell aspect ratio |
+| `--aspect <float>` | `0.5`; the font's cell shape for visual export | `convert`, `play` | Override cell aspect ratio |
 | `--mode <mode>` | `ascii`, `halfblock`, `braille`, `sobel` | `convert`, `play` | Rendering mode (`braille` and `sobel` are parsed but exit `2` with a "not implemented" error until Phase 5) |
 | `--color <mode>` | `mono`, `gray`, `fg`, `fgbg` | `convert`, `play` | Color mapping mode |
 | `--charset <string>` | `" .:-=+*#%@"` | `convert`, `play` | Custom dark-to-bright glyph ramp |
@@ -239,15 +246,17 @@ To prevent memory exhaustion and integer overflow on malformed or adversarial in
 | `--contrast <float>` | `0.0..4.0` (`1.0`) | `convert`, `play` | Contrast factor |
 | `--gamma <float>` | `0.1..4.0` (`1.0`) | `convert`, `play` | Gamma curve |
 | `--invert` | flag | `convert`, `play` | Invert luminance ramp |
-| `--font <path>` | embedded default | `convert` | Custom TrueType (`.ttf`) font for visual export |
-| `--font-size <px>` | `8..64` (`16`) | `convert` | Font height in pixels for visual export |
+| `--font <path>` | embedded default | `convert` (`.png`, `.gif`, `.mp4`) | Custom TrueType (`.ttf`) font for visual export |
+| `--font-size <px>` | `8..64` (`16`) | `convert` (`.png`, `.gif`, `.mp4`) | Font height in pixels for visual export |
 | `--crf <int>` | `0..51` (`20`) | `convert` (`.mp4`) | H.264 quality factor |
 | `--loop` | flag | `play` | Loop GIF/video playback indefinitely |
 | `--frame <index>` | `0` | `convert` | Extract a single frame (0-based, in decode order) from GIF/video when exporting `.txt`/`.ans`/`.png`; an index past the last frame is `InvalidArgument` (exit `2`) |
 
+A flag given for an output format outside its scope (including `--frame` with `.gif` or `.mp4`) is `InvalidArgument` (exit `2`), even when its value is the default.
+
 ### 8.3 Stream & Exit Code Contract
 - **Streams:** Primary converted text output (`-o -`) and `info` go to `stdout`. Progress bars, warnings, and errors always go to `stderr`.
-- **Exit Codes:** `0` Success, `1` Runtime / I/O / Decode / Encode error, `2` Invalid CLI usage or arguments, `130` Interrupted by user (`SIGINT`).
+- **Exit Codes:** `0` Success, `1` Runtime / I/O / Decode / Encode error, `2` Invalid CLI usage or arguments, `130` Interrupted. `play` and visual export catch `SIGINT` / `SIGTERM` (Ctrl+C and Ctrl+Break on Windows) to clean up first; visual export also catches `SIGHUP` unless it was already ignored (`nohup`). Elsewhere the operating system's default handling applies.
 
 ---
 
