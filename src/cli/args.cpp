@@ -30,6 +30,9 @@ enum class Opt {
     Frame,
     Output,
     Format,
+    Font,
+    FontSize,
+    Crf,
     Help,
 };
 
@@ -47,7 +50,7 @@ struct OptionSpec {
 };
 
 constexpr unsigned kRender = kConvert | kPlay;
-constexpr std::array<OptionSpec, 16> kOptions{{
+constexpr std::array<OptionSpec, 19> kOptions{{
     {"--width", "-w", Opt::Width, true, kRender},
     {"--height", "-H", Opt::Height, true, kRender},
     {"--aspect", "", Opt::Aspect, true, kRender},
@@ -63,6 +66,9 @@ constexpr std::array<OptionSpec, 16> kOptions{{
     {"--frame", "", Opt::Frame, true, kConvert},
     {"--output", "-o", Opt::Output, true, kConvert},
     {"--format", "", Opt::Format, true, kConvert},
+    {"--font", "", Opt::Font, true, kConvert},
+    {"--font-size", "", Opt::FontSize, true, kConvert},
+    {"--crf", "", Opt::Crf, true, kConvert},
     {"--help", "-h", Opt::Help, false, kConvert | kPlay | kInfo},
 }};
 
@@ -133,10 +139,37 @@ template <class T>
 
 // Everything parsed that is not stored in CliOptions itself.
 struct ParseState {
-    std::optional<TextFormat> format;  // from --format
+    std::optional<OutputFormat> format;  // from --format
     bool have_output = false;
     bool have_input = false;
+    // Given explicitly, even with the default value: some formats reject them.
+    bool have_frame = false;
+    bool have_font_size = false;
+    bool have_crf = false;
 };
+
+// An output format and its name, which is also its file extension.
+struct FormatName {
+    std::string_view name;
+    OutputFormat format;
+};
+
+constexpr std::array<FormatName, 5> kFormats{{
+    {"txt", OutputFormat::Txt},
+    {"ans", OutputFormat::Ans},
+    {"png", OutputFormat::Png},
+    {"gif", OutputFormat::Gif},
+    {"mp4", OutputFormat::Mp4},
+}};
+
+[[nodiscard]] std::optional<OutputFormat> find_format(std::string_view name) {
+    for (const FormatName& entry : kFormats) {
+        if (name == entry.name) {
+            return entry.format;
+        }
+    }
+    return std::nullopt;
+}
 
 [[nodiscard]] Status parse_float_option(std::string_view name, std::string_view value, float& out) {
     if (!parse_number(value, out)) {
@@ -162,6 +195,7 @@ struct ParseState {
             o.height_given = true;
             return Status::success();
         case Opt::Aspect:
+            o.aspect_given = true;
             return parse_float_option(spec.long_name, value, c.cell_aspect);
         case Opt::Brightness:
             return parse_float_option(spec.long_name, value, c.brightness);
@@ -221,6 +255,7 @@ struct ParseState {
             if (!parse_number(value, o.frame_index)) {
                 return bad_value(spec.long_name, value, "a non-negative integer");
             }
+            state.have_frame = true;
             return Status::success();
         case Opt::Output:
             state.have_output = true;
@@ -228,15 +263,28 @@ struct ParseState {
             o.output = o.to_stdout ? std::filesystem::path() : path_from_utf8(value);
             return Status::success();
         case Opt::Format:
-            if (value == "txt") {
-                state.format = TextFormat::Txt;
-            } else if (value == "ans") {
-                state.format = TextFormat::Ans;
-            } else if (value == "png" || value == "gif" || value == "mp4") {
-                return not_implemented("--format " + std::string(value));
-            } else {
-                return bad_value(spec.long_name, value, "txt, ans");
+            state.format = find_format(value);
+            if (!state.format.has_value()) {
+                return bad_value(spec.long_name, value, "txt, ans, png, gif, mp4");
             }
+            return Status::success();
+        case Opt::Font:
+            if (value.empty()) {
+                return bad_value(spec.long_name, value, "a .ttf file");
+            }
+            o.font = path_from_utf8(value);
+            return Status::success();
+        case Opt::FontSize:
+            if (!parse_number(value, o.font_px) || o.font_px < kMinFontPx || o.font_px > kMaxFontPx) {
+                return bad_value(spec.long_name, value, "an integer 8..64");
+            }
+            state.have_font_size = true;
+            return Status::success();
+        case Opt::Crf:
+            if (!parse_number(value, o.crf) || o.crf < kMinCrf || o.crf > kMaxCrf) {
+                return bad_value(spec.long_name, value, "an integer 0..51");
+            }
+            state.have_crf = true;
             return Status::success();
         case Opt::Help:
             break;  // handled by the caller before apply()
@@ -245,26 +293,41 @@ struct ParseState {
 }
 
 // The output format: --format, else the file extension, else .ans for stdout.
-[[nodiscard]] Result<TextFormat> resolve_format(const CliOptions& o, const ParseState& state) {
+[[nodiscard]] Result<OutputFormat> resolve_format(const CliOptions& o, const ParseState& state) {
     if (state.format.has_value()) {
         return *state.format;
     }
     if (o.to_stdout) {
-        return TextFormat::Ans;
+        return OutputFormat::Ans;
     }
     const std::u8string ext8 = o.output.extension().u8string();
     const std::string ext =
         lower_ascii(std::string(reinterpret_cast<const char*>(ext8.data()), ext8.size()));
-    if (ext == ".txt") {
-        return TextFormat::Txt;
+    if (!ext.empty()) {
+        if (const auto format = find_format(std::string_view(ext).substr(1))) {
+            return *format;
+        }
     }
-    if (ext == ".ans") {
-        return TextFormat::Ans;
+    return usage_error(
+        "cannot infer the output format from the file name; use --format txt|ans|png|gif|mp4");
+}
+
+// Options that only some output formats accept. Checked after parsing, because
+// the format may be named after them.
+[[nodiscard]] Status check_format_options(const CliOptions& o, const ParseState& state) {
+    if (o.to_stdout && is_visual(o.format)) {
+        return usage_error("'-o -' writes only txt or ans; png, gif and mp4 need a file");
     }
-    if (ext == ".png" || ext == ".gif" || ext == ".mp4") {
-        return not_implemented("exporting " + ext + " files");
+    if (!is_visual(o.format) && (o.font.has_value() || state.have_font_size)) {
+        return usage_error("--font and --font-size apply only to png, gif and mp4 output");
     }
-    return usage_error("cannot infer the output format from the file name; use --format txt|ans");
+    if (state.have_crf && o.format != OutputFormat::Mp4) {
+        return usage_error("--crf applies only to mp4 output");
+    }
+    if (state.have_frame && (o.format == OutputFormat::Gif || o.format == OutputFormat::Mp4)) {
+        return usage_error("--frame applies only to txt, ans and png output");
+    }
+    return Status::success();
 }
 
 }  // namespace
@@ -282,15 +345,16 @@ std::string_view usage_text() noexcept {
            "  vglyph --version | --help\n"
            "\n"
            "Commands:\n"
-           "  convert   Write one frame of a photo, GIF or video as .txt or .ans\n"
-           "            ('-o -' writes to stdout)\n"
+           "  convert   Write a photo, GIF or video as .txt, .ans, .png, .gif or .mp4\n"
+           "            ('-o -' writes .txt or .ans to stdout)\n"
            "  play      Play a photo, GIF or video in the terminal\n"
            "  info      Print media metadata\n"
            "\n"
            "Options for convert and play:\n"
            "  -w, --width <cols>      Grid width in cells, 4..2048 (convert: 100)\n"
            "  -H, --height <rows>     Grid height in cells, 0..1024 (0 = automatic)\n"
-           "      --aspect <float>    Cell width / height, 0.1..4.0 (0.5)\n"
+           "      --aspect <float>    Cell width / height, 0.1..4.0 (0.5;\n"
+           "                          png, gif, mp4: the font's cell shape)\n"
            "      --mode <mode>       ascii, halfblock (braille, sobel: not yet)\n"
            "      --color <mode>      mono, gray, fg, fgbg (fg)\n"
            "      --charset <string>  Dark-to-bright glyph ramp, at least 2 glyphs\n"
@@ -302,8 +366,12 @@ std::string_view usage_text() noexcept {
            "\n"
            "Options for convert:\n"
            "  -o, --output <file>     Output file, or '-' for stdout (required)\n"
-           "      --format <fmt>      txt or ans (default: from the extension; ans for stdout)\n"
-           "      --frame <index>     Frame to convert, 0-based (0)\n"
+           "      --format <fmt>      txt, ans, png, gif or mp4\n"
+           "                          (default: from the extension; ans for stdout)\n"
+           "      --frame <index>     Frame for txt, ans or png, 0-based (0)\n"
+           "      --font <path>       TrueType font for png, gif, mp4 (embedded font)\n"
+           "      --font-size <px>    Font size for png, gif, mp4, 8..64 (16)\n"
+           "      --crf <int>         mp4 quality, 0 (best) to 51 (20)\n"
            "\n"
            "Options for play:\n"
            "      --loop              Loop GIF and video playback\n"
@@ -393,11 +461,14 @@ Result<CliOptions> parse_args(std::span<const std::string_view> args) {
         if (!state.have_output) {
             return usage_error("missing -o <output>");
         }
-        const Result<TextFormat> format = resolve_format(o, state);
+        const Result<OutputFormat> format = resolve_format(o, state);
         if (format.error_if() != nullptr) {
             return *format.error_if();
         }
         o.format = *format.value_if();
+        if (const Status s = check_format_options(o, state); !s.ok()) {
+            return s.error();
+        }
     }
     if (o.command != Command::Info) {
         if (const Status s = validate(o.config); !s.ok()) {
