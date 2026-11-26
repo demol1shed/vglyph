@@ -102,6 +102,33 @@ VGLYPH_TEST(open_missing_file_is_io_error) {
     VGLYPH_CHECK(has_code(MediaReader::open(dir.file("missing.png")), ErrorCode::IoError));
 }
 
+#ifndef _WIN32  // NTFS file names cannot contain ':'
+// Only relative names can look like "<protocol>:<rest>".
+VGLYPH_TEST(open_treats_a_name_with_a_colon_as_a_local_file) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    for (const char* name : {"a:b.png", "concat:c.png"}) {
+        VGLYPH_CHECK(fixture_ok(write_png(dir.file(name), 8, 8, solid_rgb(8, 8, kRed))));
+    }
+    const vglyph_test::ScopedCwd cwd(dir.file("."));
+    VGLYPH_CHECK(cwd.ok());
+    VGLYPH_CHECK(MediaReader::open("a:b.png").ok());
+    // There is no "c.png": the concat protocol would fail to find it.
+    VGLYPH_CHECK(MediaReader::open("concat:c.png").ok());
+}
+#endif
+
+VGLYPH_TEST(open_treats_a_name_with_a_percent_sequence_as_one_file) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    VGLYPH_CHECK(fixture_ok(write_png(dir.file("a%d.png"), 8, 8, solid_rgb(8, 8, kRed))));
+    const auto opened = MediaReader::open(dir.file("a%d.png"));
+    VGLYPH_CHECK(opened.ok());
+    if (const MediaReader* reader = opened.value_if()) {
+        VGLYPH_CHECK(reader->info().media_kind == vglyph::MediaKind::Image);
+    }
+}
+
 VGLYPH_TEST(open_garbage_is_unsupported_format) {
     const TempDir dir;
     VGLYPH_CHECK(dir.ok());
