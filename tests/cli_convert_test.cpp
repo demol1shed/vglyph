@@ -1,12 +1,18 @@
+#include <algorithm>
+#include <csignal>
 #include <cstdint>
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <utility>
 #include <vector>
 
 #include "commands.hpp"
 #include "media_fixture.hpp"
+#include "platform.hpp"
 #include "test_framework.hpp"
+#include "vglyph/rasterizer.hpp"
 
 using vglyph::ErrorCode;
 using vglyph::Rgb;
@@ -50,7 +56,226 @@ fs::path bw_gif(const TempDir& dir) {
     return path;
 }
 
+// Every frame of a media file, decoded at its own size.
+struct Decoded {
+    vglyph::MediaInfo info;
+    std::vector<vglyph::VideoFrame> frames;
+};
+
+Decoded decode(const fs::path& path) {
+    Decoded out;
+    vglyph::Result<vglyph::MediaReader> opened = vglyph::MediaReader::open(path);
+    vglyph::MediaReader* reader = opened.value_if();
+    VGLYPH_CHECK(reader != nullptr);
+    if (reader == nullptr) {
+        return out;
+    }
+    out.info = reader->info();
+    for (;;) {
+        vglyph::VideoFrame frame;
+        const auto read = reader->read_frame(out.info.src_width, out.info.src_height, frame, kBlack);
+        const vglyph::ReadStatus* status = read.value_if();
+        VGLYPH_CHECK(status != nullptr);
+        if (status == nullptr || *status == vglyph::ReadStatus::EndOfStream) {
+            return out;
+        }
+        out.frames.push_back(std::move(frame));
+    }
+}
+
+bool has_bright_pixel(const vglyph::VideoFrame& frame) {
+    return std::ranges::any_of(frame.rgb24, [](std::uint8_t v) { return v > 200; });
+}
+
+// The default 16 px font has 10x22 cells, so an 8x8 source at -w 4 is a 4x2 grid.
+constexpr std::uint32_t kCellW = 10;
+constexpr std::uint32_t kCellH = 22;
+
+bool is_size(const Decoded& d, std::uint32_t w, std::uint32_t h) {
+    return d.info.src_width == w && d.info.src_height == h;
+}
+
+// No temporary export file is left beside `out`.
+bool no_temp(fs::path out) {
+    out += ".vglyph-tmp";
+    std::error_code ec;
+    return !fs::exists(out, ec);
+}
+
 }  // namespace
+
+VGLYPH_TEST(convert_png_to_png_uses_the_font_cell_shape) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const fs::path in = white_png(dir);
+    const fs::path out = dir.file("out.png");
+
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(out), "-w", "4", "--color", "mono"}) == 0);
+    Decoded d = decode(out);
+    VGLYPH_CHECK(d.info.codec_name == "png" && is_size(d, 4 * kCellW, 2 * kCellH));
+    VGLYPH_CHECK(d.frames.size() == 1 && has_bright_pixel(d.frames.front()));
+    VGLYPH_CHECK(no_temp(out));
+
+    // An explicit --aspect wins over the font's cell shape: 4 rows. The old file is replaced.
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(out), "-w", "4", "--aspect", "1"}) == 0);
+    VGLYPH_CHECK(is_size(decode(out), 4 * kCellW, 4 * kCellH));
+
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(out), "-w", "4", "--font-size", "32"}) == 0);
+    d = decode(out);
+    VGLYPH_CHECK(d.info.src_width > 4 * kCellW && d.info.src_height > 2 * kCellH);
+}
+
+VGLYPH_TEST(convert_png_output_takes_the_requested_frame) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const fs::path in = bw_gif(dir);
+    const fs::path out = dir.file("out.png");
+
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(out), "-w", "4", "--color", "mono"}) == 0);
+    Decoded d = decode(out);
+    VGLYPH_CHECK(d.frames.size() == 1 && !has_bright_pixel(d.frames.front()));
+
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(out), "-w", "4", "--color", "mono", "--frame", "1"}) == 0);
+    d = decode(out);
+    VGLYPH_CHECK(d.frames.size() == 1 && has_bright_pixel(d.frames.front()));
+
+    const fs::path past = dir.file("past.png");
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(past), "--frame", "3"}) == 2);
+    VGLYPH_CHECK(!fs::exists(past) && no_temp(past));
+}
+
+VGLYPH_TEST(convert_gif_to_gif_and_mp4_keeps_every_frame_and_time) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const fs::path in = bw_gif(dir);  // three frames of 10 cs, read as 100 ms each
+
+    for (const char* name : {"out.gif", "out.mp4"}) {
+        const fs::path out = dir.file(name);
+        VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(out), "-w", "4", "--color", "mono"}) == 0);
+        const Decoded d = decode(out);
+        VGLYPH_CHECK(is_size(d, 4 * kCellW, 2 * kCellH));
+        VGLYPH_CHECK(d.frames.size() == 3);
+        if (d.frames.size() == 3) {
+            for (std::size_t i = 0; i < 3; ++i) {
+                VGLYPH_CHECK(d.frames[i].pts_us == static_cast<std::int64_t>(i) * 100'000);
+                VGLYPH_CHECK(has_bright_pixel(d.frames[i]) == (i == 1));
+            }
+        }
+        VGLYPH_CHECK(no_temp(out));
+    }
+}
+
+VGLYPH_TEST(convert_video_to_mp4_keeps_variable_frame_times) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const fs::path in = dir.file("in.mp4");
+    std::vector<FixtureFrame> frames(3);
+    const std::int64_t pts_ms[3] = {0, 40, 300};
+    for (std::size_t i = 0; i < 3; ++i) {
+        frames[i] = FixtureFrame{solid_rgb(32, 32, kWhite), pts_ms[i], 40};
+    }
+    VGLYPH_CHECK(write_mp4(in, 32, 32, frames).ok());
+    const fs::path out = dir.file("out.mp4");
+
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(out), "-w", "4", "--crf", "0"}) == 0);
+    const Decoded d = decode(out);
+    VGLYPH_CHECK(d.info.codec_name == "h264" && d.frames.size() == 3);
+    if (d.frames.size() == 3) {
+        for (std::size_t i = 0; i < 3; ++i) {
+            VGLYPH_CHECK(d.frames[i].pts_us == pts_ms[i] * 1000);
+        }
+    }
+}
+
+VGLYPH_TEST(a_photo_cannot_become_an_animation) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const fs::path in = white_png(dir);
+    for (const char* name : {"out.gif", "out.mp4"}) {
+        const fs::path out = dir.file(name);
+        VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(out)}) == 2);
+        VGLYPH_CHECK(!fs::exists(out) && no_temp(out));
+    }
+}
+
+VGLYPH_TEST(custom_font_is_loaded_and_bad_fonts_fail) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const fs::path in = white_png(dir);
+    const fs::path font = dir.file("copy.ttf");
+    const auto data = vglyph::default_font_data();
+    VGLYPH_CHECK(write_file(font, std::vector<std::uint8_t>(data.begin(), data.end())));
+    const fs::path with_default = dir.file("default.png");
+    const fs::path with_custom = dir.file("custom.png");
+
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(with_default), "-w", "4"}) == 0);
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(with_custom), "-w", "4", "--font", utf8(font)}) == 0);
+    const Decoded a = decode(with_default);
+    const Decoded b = decode(with_custom);
+    VGLYPH_CHECK(a.frames.size() == 1 && b.frames.size() == 1);
+    if (a.frames.size() == 1 && b.frames.size() == 1) {
+        VGLYPH_CHECK(a.frames[0].rgb24 == b.frames[0].rgb24);
+    }
+
+    const fs::path junk = dir.file("junk.ttf");
+    VGLYPH_CHECK(write_file(junk, std::vector<std::uint8_t>(256, 'x')));
+    const fs::path huge = dir.file("huge.ttf");
+    VGLYPH_CHECK(write_file(huge, {}));
+    std::error_code ec;
+    fs::resize_file(huge, 16 * 1024 * 1024 + 1, ec);
+    VGLYPH_CHECK(!ec);
+    const fs::path out = dir.file("bad.png");
+    for (const fs::path& bad : {junk, huge, dir.file("missing.ttf"), dir.file(".")}) {
+        VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(out), "--font", utf8(bad)}) == 1);
+        VGLYPH_CHECK(!fs::exists(out) && no_temp(out));
+    }
+    // A codepoint the font lacks (U+4E00, a CJK ideograph).
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(out), "--charset", " \xE4\xB8\x80"}) == 1);
+    VGLYPH_CHECK(!fs::exists(out));
+}
+
+VGLYPH_TEST(the_output_may_be_the_input) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const fs::path png = white_png(dir);
+    VGLYPH_CHECK(run_cli({"convert", utf8(png), "-o", utf8(png), "-w", "4"}) == 0);
+    VGLYPH_CHECK(is_size(decode(png), 4 * kCellW, 2 * kCellH));
+
+    const fs::path gif = bw_gif(dir);
+    VGLYPH_CHECK(run_cli({"convert", utf8(gif), "-o", utf8(gif), "-w", "4"}) == 0);
+    const Decoded d = decode(gif);
+    VGLYPH_CHECK(is_size(d, 4 * kCellW, 2 * kCellH) && d.frames.size() == 3);
+}
+
+VGLYPH_TEST(a_failed_export_leaves_existing_files_alone) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const fs::path in = white_png(dir);
+    const fs::path out = dir.file("out.png");
+    const std::vector<std::uint8_t> old = {'o', 'l', 'd'};
+    std::vector<std::uint8_t> now;
+
+    // Over the output size cap (2048 cells of a 64 px font).
+    VGLYPH_CHECK(write_file(out, old));
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(out), "-w", "2048", "--font-size", "64"}) == 1);
+    VGLYPH_CHECK(read_file(out, now) && now == old && no_temp(out));
+
+    // A file that has the temporary name is not ours to overwrite or remove.
+    fs::path temp = out;
+    temp += ".vglyph-tmp";
+    VGLYPH_CHECK(write_file(temp, old));
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(out), "-w", "4"}) == 1);
+    VGLYPH_CHECK(read_file(temp, now) && now == old);
+    VGLYPH_CHECK(read_file(out, now) && now == old);
+
+    // The export is complete but cannot be renamed over a directory.
+    const fs::path taken = dir.file("taken.png");
+    std::error_code ec;
+    fs::create_directories(taken / "keep", ec);
+    VGLYPH_CHECK(!ec);
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(taken), "-w", "4"}) == 1);
+    VGLYPH_CHECK(fs::exists(taken / "keep") && no_temp(taken));
+}
 
 VGLYPH_TEST(convert_png_to_txt) {
     const TempDir dir;
@@ -129,6 +354,43 @@ VGLYPH_TEST(failures_use_the_documented_exit_codes_and_write_nothing) {
     VGLYPH_CHECK(!fs::exists(out));
     VGLYPH_CHECK(!fs::exists(dir.file("out.gif")));
 }
+
+#ifndef _WIN32  // raise() does not reach SetConsoleCtrlHandler
+namespace {
+
+void prior_handler(int) {}
+
+// Installs a guard, raises `signal`, and returns whether the guard recorded it.
+bool guard_records(int signal) {
+    const auto installed = InterruptGuard::install();
+    const InterruptGuard* guard = installed.value_if();
+    VGLYPH_CHECK(guard != nullptr);
+    if (guard == nullptr) {
+        return false;
+    }
+    VGLYPH_CHECK(!guard->requested());
+    VGLYPH_CHECK(std::raise(signal) == 0);
+    return guard->requested();
+}
+
+}  // namespace
+
+VGLYPH_TEST(interrupt_guard_records_signals_and_restores_the_handlers) {
+    for (const int signal : {SIGINT, SIGTERM, SIGHUP}) {
+        const auto before = std::signal(signal, prior_handler);
+        VGLYPH_CHECK(before != SIG_ERR);
+        VGLYPH_CHECK(guard_records(signal));
+        VGLYPH_CHECK(std::signal(signal, before) == prior_handler);
+    }
+}
+
+VGLYPH_TEST(interrupt_guard_leaves_an_ignored_hangup_ignored) {
+    const auto before = std::signal(SIGHUP, SIG_IGN);  // what nohup sets up
+    VGLYPH_CHECK(before != SIG_ERR);
+    VGLYPH_CHECK(!guard_records(SIGHUP));
+    VGLYPH_CHECK(std::signal(SIGHUP, before) == SIG_IGN);
+}
+#endif
 
 VGLYPH_TEST(exit_code_mapping) {
     VGLYPH_CHECK(exit_code(ErrorCode::Ok) == 0);
