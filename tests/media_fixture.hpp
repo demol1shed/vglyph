@@ -62,6 +62,34 @@ private:
     fs::path path_;
 };
 
+// Makes `dir` the working directory until destruction. Declare it after the
+// TempDir it points into, so it moves back out before the directory is removed.
+class ScopedCwd {
+public:
+    explicit ScopedCwd(const fs::path& dir) {
+        std::error_code ec;
+        previous_ = fs::current_path(ec);
+        if (!ec) {
+            fs::current_path(dir, ec);
+        }
+        ok_ = !ec;
+    }
+    ~ScopedCwd() {
+        if (ok_) {
+            std::error_code ec;
+            fs::current_path(previous_, ec);  // best effort: nothing to report it to
+        }
+    }
+    ScopedCwd(const ScopedCwd&) = delete;
+    ScopedCwd& operator=(const ScopedCwd&) = delete;
+
+    [[nodiscard]] bool ok() const { return ok_; }
+
+private:
+    fs::path previous_;
+    bool ok_ = false;
+};
+
 [[nodiscard]] inline bool write_file(const fs::path& path, const std::vector<std::uint8_t>& bytes) {
     std::ofstream out(path, std::ios::binary);
     out.write(reinterpret_cast<const char*>(bytes.data()),

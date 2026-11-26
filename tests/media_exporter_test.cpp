@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <optional>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include "media_fixture.hpp"
@@ -154,6 +155,47 @@ VGLYPH_TEST(png_round_trips_every_pixel_exactly) {
             VGLYPH_CHECK(near(pixel(frame, x, y), Rgb{px[0], px[1], px[2]}, 0));
         }
     }
+}
+
+#ifndef _WIN32  // NTFS file names cannot contain ':'
+// PNG and MP4 both reopen the name inside the muxer (image2, +faststart).
+VGLYPH_TEST(export_to_a_name_with_a_colon_writes_a_local_file) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const vglyph_test::ScopedCwd cwd(dir.file("."));
+    VGLYPH_CHECK(cwd.ok());
+    if (!cwd.ok()) {
+        return;
+    }
+    for (const auto& [name, format] : {std::pair{"a:b.png", ExportFormat::Png},
+                                       std::pair{"a:b.mp4", ExportFormat::Mp4}}) {
+        std::optional<MediaExporter> exporter;
+        open_exporter(name, format, 8, 8, exporter);
+        if (!exporter) {
+            return;
+        }
+        VGLYPH_CHECK(exporter->write_frame(solid(8, 8, kRed), 0, 100000).ok());
+        VGLYPH_CHECK(exporter->finish().ok());
+        std::optional<MediaReader> reader;
+        open_reader(dir.file(name), reader);
+    }
+}
+#endif
+
+VGLYPH_TEST(png_to_a_name_with_a_percent_sequence_writes_that_file) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    std::optional<MediaExporter> exporter;
+    open_exporter(dir.file("a%d.png"), ExportFormat::Png, 8, 8, exporter);
+    if (!exporter) {
+        return;
+    }
+    VGLYPH_CHECK(exporter->write_frame(solid(8, 8, kRed), 0, 0).ok());
+    VGLYPH_CHECK(exporter->finish().ok());
+    std::error_code ec;
+    VGLYPH_CHECK(std::filesystem::exists(dir.file("a%d.png"), ec));
+    std::optional<MediaReader> reader;
+    open_reader(dir.file("a%d.png"), reader);
 }
 
 VGLYPH_TEST(png_takes_exactly_one_frame) {
