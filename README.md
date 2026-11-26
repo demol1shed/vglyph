@@ -2,7 +2,7 @@
 
 A fast, minimal, cross-platform ASCII art converter and player for photos, animated GIFs, and videos.
 
-> **Status: pre-alpha.** The conversion engine, the FFmpeg media reader and the `vglyph` CLI (`convert` to `.txt`/`.ans`, `play`, `info`) work. PNG/GIF/MP4 export, the glyph rasterizer and the GUI are specified in [`SPEC.md`](SPEC.md) but not implemented yet.
+> **Status: pre-alpha.** The conversion engine, the FFmpeg media reader, the glyph rasterizer and the `vglyph` CLI (`convert` to `.txt`/`.ans`/`.png`/`.gif`/`.mp4`, `play`, `info`) work. Braille, Sobel, dithering and the GUI are specified in [`SPEC.md`](SPEC.md) but not implemented yet.
 
 ## Planned features
 
@@ -20,23 +20,29 @@ Platforms: Linux (x86_64 / aarch64) and Windows 11 (x86_64). A TrueColor (24-bit
 ```sh
 vglyph convert photo.jpg -o photo.ans -w 120 --mode halfblock
 vglyph convert photo.jpg -o - --format txt | head
+vglyph convert photo.jpg -o photo.png --font-size 24
+vglyph convert clip.mp4  -o ascii.mp4 --mode halfblock --crf 18
+vglyph convert anim.gif  -o ascii.gif --font /path/to/mono.ttf
 vglyph play    clip.mp4  --loop
 vglyph info    clip.mp4
 ```
 
-- `convert` writes one frame (`--frame N`) as `.txt` or `.ans` (24-bit color). `-o -` writes to stdout, as `.ans` unless `--format txt` is given.
+- `convert` picks the format from the output's extension (or `--format`):
+  - `.txt`, `.ans` (24-bit color) and `.png` hold one frame (`--frame N`). `-o -` writes text to stdout, as `.ans` unless `--format txt` is given.
+  - `.gif` and `.mp4` hold the whole animation or video, with its frame times; they need an animated or video input. Audio is not copied.
+  - `.png`, `.gif` and `.mp4` are drawn with the embedded JetBrains Mono, or a TrueType font given with `--font`, at `--font-size` (8..64, default 16). `--crf` sets MP4 quality. The file is written to `<output>.vglyph-tmp` first and renamed when complete, so a failed or interrupted export leaves an existing output untouched.
 - `play` draws photos, GIFs and videos in the terminal, paced by the frames' timestamps. `Space` pauses, `l` toggles looping, `q` or `Esc` quits; resizing the terminal refits the picture. It needs an interactive terminal. Audio is not played.
 - `info` prints `key: value` lines of the file's metadata.
 
 Run `vglyph --help` for every option. Exit codes: `0` success, `1` runtime error, `2` bad usage (including `--frame` past the end), `130` interrupted.
 
-Not available yet: `.png`/`.gif`/`.mp4` export and `--font`, `--font-size`, `--crf` (Phase 4), `--mode braille|sobel` and `--dither bayer|floyd` (Phase 5).
+Not available yet: `--mode braille|sobel` and `--dither bayer|floyd` (Phase 5).
 
-Known limits: interactive `play` has been run on Linux only; the Windows console code is compiled and smoke-tested in CI but not yet tried by hand. On Linux, arrow keys quit the player (they start with `Esc`).
+Known limits: pass `--font` only fonts you trust, because the font parser (`stb_truetype`) does not validate the offsets inside a font file and a crafted one can crash vglyph or make it read memory it should not. Interactive `play` has been run on Linux only; the Windows console code is compiled and smoke-tested in CI but not yet tried by hand. On Linux, arrow keys quit the player (they start with `Esc`). Interrupting an export has likewise been tried on Linux only. If an export is killed and leaves `<output>.vglyph-tmp` behind, delete it before exporting to the same file again.
 
 ## Building
 
-Requirements: a C++20 compiler (GCC, Clang, or MSVC), CMake 3.25+, Ninja, and FFmpeg development libraries (`libavformat`, `libavcodec`, `libswscale`, `libavutil`; found through `pkg-config` on Linux, `vcpkg` on Windows). SDL3 is not needed until Phase 6.
+Requirements: a C++20 compiler (GCC, Clang, or MSVC), CMake 3.25+, Ninja, and FFmpeg development libraries (`libavformat`, `libavcodec`, `libswscale`, `libavutil`; found through `pkg-config` on Linux, `vcpkg` on Windows; MP4 export needs an FFmpeg built with `libx264`). SDL3 is not needed until Phase 6.
 
 ```sh
 # Debug with AddressSanitizer + UndefinedBehaviorSanitizer, no GUI
@@ -64,11 +70,12 @@ On Windows 11, configure with the vcpkg toolchain file (`-DCMAKE_TOOLCHAIN_FILE=
 | Path | Purpose |
 | :--- | :--- |
 | `include/vglyph/`, `src/core/` | `vglyph-core`: the UI-free conversion engine |
-| `src/render/` | `.txt` / `.ans` serialization |
-| `src/media/` | FFmpeg-backed media reader |
+| `src/render/` | `.txt` / `.ans` serialization, glyph atlas and RGBA rasterizer |
+| `src/media/` | FFmpeg-backed media reader and PNG/GIF/MP4 exporter |
 | `src/cli/` | `vglyph` command-line executable: parser, commands, terminal player, platform adapters |
 | `src/gui/` | `vglyph-gui` desktop executable (stub for now) |
 | `tests/` | Single-header test framework and CTest suites |
+| `assets/fonts/`, `third_party/` | Embedded font and vendored `stb_truetype.h` |
 
 ## Documentation
 
@@ -77,4 +84,4 @@ On Windows 11, configure with the vcpkg toolchain file (`-DCMAKE_TOOLCHAIN_FILE=
 
 ## License
 
-vglyph is licensed under the [GNU General Public License v3.0](LICENSE). Third-party components and their licenses will be listed in `THIRD_PARTY_LICENSES.md` once they are vendored.
+vglyph is licensed under the [GNU General Public License v3.0](LICENSE). Third-party components and their licenses are listed in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
