@@ -126,19 +126,26 @@ After coding and test runs for a phase are complete, present a concise **Self-Au
 
 ## 6. Phase Tracking
 
-- **Current Phase:** Phase 4 (Glyph Rasterizer and Visual/Video Export)
+- **Current Phase:** Phase 5 (Advanced Modular Filters)
 - **Completed Phases:** Phase 0 (Project Skeleton and Build Gate): verified locally and in CI (Linux GCC/Clang with ASan+UBSan, Windows MSVC).
   Phase 1 (Error Model and Core Conversion Engine): verified locally and in CI (Linux GCC/Clang with ASan+UBSan, Windows MSVC); merged in PRs #5, #6 and #7.
   Phase 2 (FFmpeg Media Reader): verified locally and in CI (Linux GCC/Clang with ASan+UBSan, Windows MSVC); merged in PRs #9, #10 and #11.
   Phase 3 (Text Serialization and `vglyph` CLI): verified locally and in CI (Linux GCC/Clang with ASan+UBSan, Windows MSVC); merged in PRs #13, #14, #15, #16 and #17. Interactive `play` was checked by hand on Linux (mp4, GIF, photos, resize, terminal restore after Ctrl+C); the Windows Terminal check was not possible (no Windows machine), see the carry-over.
+  Phase 4 (Glyph Rasterizer and Visual/Video Export): verified locally and in CI (Linux GCC/Clang with ASan+UBSan, Windows MSVC); merged in PRs #19, #20, #21, #22, #23, #24, #25, #26 and #28. PNG, GIF and MP4 export and `SIGINT` / `SIGTERM` / `SIGHUP` cleanup were checked by hand on Linux only.
 - **Carry-over:**
   - `vcpkg.json`: the `ffmpeg` features (`avcodec`, `avformat`, `swscale`, `zlib`, `gpl`, `x264`) are verified on Windows CI. The `gui` feature names (`sdl3-binding`, `sdl3-renderer-binding`) are still unverified; confirm them in Phase 6.
-  - vcpkg builds FFmpeg with `--disable-autodetect`, so every optional library needs its vcpkg feature (`zlib` is required for PNG). `webp` is not enabled, so WebP is unreadable on Windows; decide before v1.0 (SPEC 1.2 lists WebP). Linux CI uses Ubuntu's FFmpeg 6.1, Windows CI vcpkg's FFmpeg 9.0.2: use only non-deprecated FFmpeg API.
+  - vcpkg builds FFmpeg with `--disable-autodetect`, so every optional library needs its vcpkg feature (`zlib` is required for PNG). `webp` is not enabled, so WebP is unreadable on Windows; decide before v1.0 (SPEC 1.2 lists WebP). Linux CI uses Ubuntu's FFmpeg 6.1, Windows CI vcpkg's FFmpeg 9.x (9.0.2 or 9.1, following the runner image because `vcpkg.json` has no `builtin-baseline`): use only non-deprecated FFmpeg API.
   - Windows: interactive `play` (the `Terminal` guard: keys, resize, Ctrl+C restore, 32 KiB chunked console writes) was never run on Windows; CI only compiles it and smoke-tests the non-console path (UTF-8 file names, `convert`, `play` exits 2 without a console). Verify on Windows Terminal before v1.0.
   - POSIX `play`: arrow keys start with `Esc` and therefore quit; read the rest of the escape sequence to fix it.
   - GIF delays of 10 ms or less are clamped to 100 ms for the `gif` demuxer only; APNG and animated WebP are untouched. `info` still reports the container's `fps` and `duration_us` for such GIFs.
   - The MSVC Debug STL allocates per `std::string`, so the allocation-count test in `tests/player_test.cpp` skips its check when `_ITERATOR_DEBUG_LEVEL != 0`; the Release and Linux builds cover it.
-  - Alpha is dropped by the RGB24 conversion instead of being composited over `bg_color`; settle it with the exporters in Phase 4.
+  - `stb_truetype` does no range checking, so a crafted `--font` file can make it read out of bounds (SPEC 7.1 requires trusted fonts). Revisit before the Phase 6 GUI adds a font picker, and before v1.0.
+  - Windows: Ctrl+C, Ctrl+Break and closing the console during a PNG/GIF/MP4 export were never run. Verify before v1.0.
+  - A visual export that is killed (`SIGKILL`, a crash, a closed Windows console) can leave `<output>.vglyph-tmp`; later exports to that output fail until it is deleted. This is deliberate: the file is never overwritten.
+  - MP4 encoding is single-threaded (`thread_count` 1); revisit with the Phase 7 profiling.
+  - A seek that the demuxer gets wrong (every one in MPEG-TS, some in MP4, MOV and AVI files with B-frames) reopens the file and decodes from the start: about 6 ms per second of 720p H.264 on a 16-core machine (0.76 s for a target 119 s into a `.ts`), during which `play` handles no keys and no Ctrl+C. Retry the demuxer seek further back first, before the Phase 6 GUI scrubber.
+  - AVI MPEG-4 with B-frames can report end of stream for a seek very close to the end.
+  - swscale returns wrong colors when a source 2 or 4 pixels wide is reduced to 1 pixel (`SWS_ACCURATE_RND` does not change it); tests use sources 8 pixels or wider.
   - The 64 MP source pixel cap (`kMaxSourcePixels`) is enforced in `MediaReader` but has no test, since it needs a ~200 MB image.
 
 ---
