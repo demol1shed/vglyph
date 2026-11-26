@@ -276,4 +276,29 @@ TerminalEvent Terminal::wait(std::chrono::microseconds timeout) {
     }
 }
 
+// ---- InterruptGuard ---------------------------------------------------------
+
+struct InterruptGuard::State {};  // a State exists while the handler is installed
+
+InterruptGuard::InterruptGuard(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+InterruptGuard::InterruptGuard(InterruptGuard&&) noexcept = default;
+
+InterruptGuard::~InterruptGuard() {
+    if (state_) {
+        // Best effort: a destructor has nobody to report a failed removal to.
+        static_cast<void>(SetConsoleCtrlHandler(on_ctrl, FALSE));
+    }
+}
+
+Result<InterruptGuard> InterruptGuard::install() {
+    auto state = std::make_unique<State>();
+    g_stop.store(false);
+    if (SetConsoleCtrlHandler(on_ctrl, TRUE) == 0) {
+        return win_error("SetConsoleCtrlHandler");
+    }
+    return InterruptGuard(std::move(state));
+}
+
+bool InterruptGuard::requested() const noexcept { return g_stop.load(); }
+
 }  // namespace vglyph::cli

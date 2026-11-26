@@ -75,6 +75,30 @@ private:
     std::unique_ptr<State> state_;
 };
 
+// RAII guard for a long export. While one exists, Ctrl+C, SIGTERM and SIGHUP
+// (Ctrl+C and Ctrl+Break on Windows) only record the request, so the caller can
+// stop between frames and clean up. A SIGHUP that was already ignored (nohup)
+// stays ignored. The guard shares that record with Terminal, so the two must not
+// exist at the same time, and only one guard may exist at a time.
+class InterruptGuard {
+public:
+    [[nodiscard]] static Result<InterruptGuard> install();
+
+    InterruptGuard(InterruptGuard&&) noexcept;
+    InterruptGuard& operator=(InterruptGuard&&) = delete;
+    InterruptGuard(const InterruptGuard&) = delete;
+    InterruptGuard& operator=(const InterruptGuard&) = delete;
+    ~InterruptGuard();
+
+    // True once an interrupt arrived.
+    [[nodiscard]] bool requested() const noexcept;
+
+private:
+    struct State;
+    explicit InterruptGuard(std::unique_ptr<State> state) noexcept;
+    std::unique_ptr<State> state_;
+};
+
 // Writes every byte, unmodified (no newline translation), to stdout or
 // stderr. Stdout is never touched through <cstdio>, so bytes cannot reorder.
 [[nodiscard]] Status write_stdout(std::string_view bytes);

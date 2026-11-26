@@ -217,4 +217,55 @@ TerminalEvent Terminal::wait(std::chrono::microseconds timeout) {
     }
 }
 
+// ---- InterruptGuard ---------------------------------------------------------
+
+struct InterruptGuard::State {
+    Hook hooks[3] = {{SIGINT, on_stop, {}, false},
+                     {SIGTERM, on_stop, {}, false},
+                     {SIGHUP, on_stop, {}, false}};
+};
+
+InterruptGuard::InterruptGuard(std::unique_ptr<State> state) noexcept : state_(std::move(state)) {}
+InterruptGuard::InterruptGuard(InterruptGuard&&) noexcept = default;
+
+InterruptGuard::~InterruptGuard() {
+    if (!state_) {
+        return;  // moved from
+    }
+    for (Hook& hook : state_->hooks) {
+        if (hook.installed) {
+            // Best effort: a destructor has nobody to report a failed restore to.
+            static_cast<void>(sigaction(hook.signal, &hook.previous, nullptr));
+        }
+    }
+}
+
+Result<InterruptGuard> InterruptGuard::install() {
+    // From here on, returning early destroys `guard`, which restores the handlers.
+    InterruptGuard guard(std::make_unique<State>());
+    g_stop = 0;
+    for (Hook& hook : guard.state_->hooks) {
+        if (hook.signal == SIGHUP) {
+            struct sigaction current {};
+            if (sigaction(SIGHUP, nullptr, &current) != 0) {
+                return make_error(ErrorCode::IoError, std::string("sigaction failed: ") + std::strerror(errno));
+            }
+            if (current.sa_handler == SIG_IGN) {
+                continue;  // nohup: the export outlives its terminal
+            }
+        }
+        struct sigaction action {};
+        action.sa_handler = hook.handler;
+        action.sa_flags = SA_RESTART;  // file I/O carries on; the flag is polled per frame
+        sigemptyset(&action.sa_mask);
+        if (sigaction(hook.signal, &action, &hook.previous) != 0) {
+            return make_error(ErrorCode::IoError, std::string("sigaction failed: ") + std::strerror(errno));
+        }
+        hook.installed = true;
+    }
+    return guard;
+}
+
+bool InterruptGuard::requested() const noexcept { return g_stop != 0; }
+
 }  // namespace vglyph::cli
