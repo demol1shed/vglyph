@@ -40,7 +40,7 @@ VGLYPH_TEST(convert_defaults) {
     VGLYPH_CHECK(o.input == "in.png");
     VGLYPH_CHECK(o.output == "out.txt");
     VGLYPH_CHECK(!o.to_stdout);
-    VGLYPH_CHECK(o.format == TextFormat::Txt);
+    VGLYPH_CHECK(o.format == OutputFormat::Txt);
     VGLYPH_CHECK(o.config.target_cols == 100);
     VGLYPH_CHECK(!o.width_given && !o.height_given);
     VGLYPH_CHECK(o.frame_index == 0);
@@ -52,7 +52,7 @@ VGLYPH_TEST(convert_reads_every_render_option) {
         ok(parse({"convert", "in.png", "-o", "out.ans", "-w", "80", "-H", "20", "--aspect", "0.4",
                   "--mode", "halfblock", "--color", "fgbg", "--charset", " .#", "--brightness",
                   "-0.25", "--contrast", "1.5", "--gamma", "2", "--invert", "--frame", "3"}));
-    VGLYPH_CHECK(o.format == TextFormat::Ans);
+    VGLYPH_CHECK(o.format == OutputFormat::Ans);
     VGLYPH_CHECK(o.config.target_cols == 80 && o.width_given);
     VGLYPH_CHECK(o.config.target_rows == 20 && o.height_given);
     VGLYPH_CHECK(o.config.cell_aspect == 0.4f);
@@ -74,33 +74,25 @@ VGLYPH_TEST(long_options_accept_equals_form) {
 }
 
 VGLYPH_TEST(output_format_comes_from_flag_extension_or_stdout) {
-    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "o.txt"})).format == TextFormat::Txt);
-    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "o.ans"})).format == TextFormat::Ans);
-    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "o.TXT"})).format == TextFormat::Txt);
+    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "o.txt"})).format == OutputFormat::Txt);
+    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "o.ans"})).format == OutputFormat::Ans);
+    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "o.TXT"})).format == OutputFormat::Txt);
 
     const CliOptions to_stdout = ok(parse({"convert", "a", "-o", "-"}));
     VGLYPH_CHECK(to_stdout.to_stdout && to_stdout.output.empty());
-    VGLYPH_CHECK(to_stdout.format == TextFormat::Ans);  // ANSI is the stdout default
+    VGLYPH_CHECK(to_stdout.format == OutputFormat::Ans);  // ANSI is the stdout default
 
-    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "-", "--format", "txt"})).format == TextFormat::Txt);
-    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "o.dat", "--format", "txt"})).format == TextFormat::Txt);
+    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "-", "--format", "txt"})).format == OutputFormat::Txt);
+    VGLYPH_CHECK(ok(parse({"convert", "a", "-o", "o.dat", "--format", "txt"})).format == OutputFormat::Txt);
     VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.dat"}), "cannot infer"));
     VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "noext"}), "cannot infer"));
 }
 
 VGLYPH_TEST(unfinished_features_are_rejected_as_not_implemented) {
-    VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.png"}), "not implemented"));
-    VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.gif"}), "not implemented"));
-    VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.mp4"}), "not implemented"));
-    VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "-", "--format", "png"}), "not implemented"));
     VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.txt", "--mode", "braille"}), "not implemented"));
     VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.txt", "--mode", "sobel"}), "not implemented"));
     VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.txt", "--dither", "bayer"}), "not implemented"));
     VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.txt", "--dither", "floyd"}), "not implemented"));
-    // Export flags belong to a later phase and are plain unknown options for now.
-    VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.txt", "--font", "f.ttf"}), "unknown option"));
-    VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.txt", "--font-size", "16"}), "unknown option"));
-    VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.txt", "--crf", "20"}), "unknown option"));
 }
 
 VGLYPH_TEST(structural_errors) {

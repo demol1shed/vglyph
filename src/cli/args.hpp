@@ -4,27 +4,36 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string_view>
 
 #include "vglyph/convert.hpp"
 #include "vglyph/error.hpp"
+#include "vglyph/media_exporter.hpp"
 
 namespace vglyph::cli {
 
 enum class Command { Convert, Play, Info, Help, Version };
 
-// Output formats `convert` can write today. PNG, GIF and MP4 arrive with the
-// exporters and are rejected as "not implemented" until then.
-enum class TextFormat { Txt, Ans };
+// Output formats of `convert`: text, or rasterized through a font.
+enum class OutputFormat { Txt, Ans, Png, Gif, Mp4 };
+
+[[nodiscard]] constexpr bool is_visual(OutputFormat format) noexcept {
+    return format != OutputFormat::Txt && format != OutputFormat::Ans;
+}
 
 struct CliOptions {
     Command command = Command::Help;
     std::filesystem::path input;
     std::filesystem::path output;  // convert only; empty when writing to stdout
     bool to_stdout = false;        // convert only: "-o -"
-    TextFormat format = TextFormat::Ans;
+    OutputFormat format = OutputFormat::Ans;
     ConvertConfig config;
+    bool aspect_given = false;  // visual export uses the font's cell shape unless --aspect was given
+    std::optional<std::filesystem::path> font;  // png/gif/mp4; none = the embedded font
+    std::uint32_t font_px = 16;                 // png/gif/mp4
+    int crf = ExportOptions{}.crf;              // mp4 only
     bool width_given = false;   // play fits the grid to the terminal unless -w was given
     bool height_given = false;  // ... or -H
     std::uint64_t frame_index = 0;  // convert only: --frame

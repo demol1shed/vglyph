@@ -19,8 +19,8 @@ namespace vglyph::cli {
 // `info` output: one "key: value" line per MediaInfo field.
 [[nodiscard]] std::string format_info(const MediaInfo& info);
 
-// Converts frame options.frame_index of options.input and appends the
-// finished .txt or .ans content, including the final newline, to `out`.
+// For txt and ans output: converts frame options.frame_index of options.input
+// and appends the finished content, including the final newline, to `out`.
 // A frame index past the last frame is InvalidArgument.
 [[nodiscard]] Status convert_frame(const CliOptions& options, std::string& out);
 
