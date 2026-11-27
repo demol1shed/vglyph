@@ -14,6 +14,7 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
 
+#include "braille.hpp"
 #include "checked_math.hpp"
 #include "vglyph/rasterizer.hpp"
 #include "vglyph_embedded_font.hpp"
@@ -68,12 +69,12 @@ Result<GlyphAtlas> GlyphAtlas::create(std::span<const std::uint8_t> ttf, std::ui
                           "cannot load the font (only TrueType outlines are supported)");
     }
 
-    // Sorted unique codepoints; the half block is drawn without the font.
+    // Sorted unique codepoints; the half block and Braille are drawn without the font.
     std::vector<char32_t> codepoints(charset.begin(), charset.end());
     std::sort(codepoints.begin(), codepoints.end());
     codepoints.erase(std::unique(codepoints.begin(), codepoints.end()), codepoints.end());
-    codepoints.erase(std::remove(codepoints.begin(), codepoints.end(), kUpperHalfBlock),
-                     codepoints.end());
+    std::erase_if(codepoints,
+                  [](char32_t c) { return c == kUpperHalfBlock || is_braille(c); });
 
     // Pass 1: every glyph must exist; the widest advance sets the cell width.
     const float scale = stbtt_ScaleForMappingEmToPixels(&font, static_cast<float>(px_height));

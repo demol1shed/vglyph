@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <string>
 
+#include "braille.hpp"
 #include "checked_math.hpp"
 #include "vglyph/convert.hpp"
 #include "vglyph/rasterizer.hpp"
@@ -61,6 +62,28 @@ void draw_glyph(std::uint8_t* cell, std::size_t stride, std::uint32_t cell_w, st
     }
 }
 
+// Draws the raised dots of a Braille cell (SPEC section 7.1): the cell splits
+// into 2 x 4 sub-cells, and a dot is its sub-cell inset by a quarter on each side.
+void draw_braille(std::uint8_t* cell, std::size_t stride, std::uint32_t cell_w,
+                  std::uint32_t cell_h, const Cell& source) noexcept {
+    const auto raised = static_cast<unsigned>(source.codepoint - kBrailleBlank);
+    for (std::uint32_t row = 0; row < 4; ++row) {
+        const std::uint32_t top = row * cell_h / 4;
+        const std::uint32_t bottom = (row + 1) * cell_h / 4;
+        const std::uint32_t inset_y = (bottom - top) / 4;
+        for (std::uint32_t col = 0; col < 2; ++col) {
+            if ((raised & kBrailleDotBit[row][col]) == 0) {
+                continue;
+            }
+            const std::uint32_t left = col * cell_w / 2;
+            const std::uint32_t right = (col + 1) * cell_w / 2;
+            const std::uint32_t inset_x = (right - left) / 4;
+            fill_rect(cell, stride, left + inset_x, right - inset_x, top + inset_y,
+                      bottom - inset_y, source.fg);
+        }
+    }
+}
+
 }  // namespace
 
 Status rasterize(const AsciiFrame& frame, const GlyphAtlas& atlas, RgbaImage& out) {
@@ -101,6 +124,11 @@ Status rasterize(const AsciiFrame& frame, const GlyphAtlas& atlas, RgbaImage& ou
             if (source.codepoint == kUpperHalfBlock) {
                 fill_rect(cell, stride, 0, cell_w, 0, half, source.fg);
                 fill_rect(cell, stride, 0, cell_w, half, cell_h, source.bg);
+                continue;
+            }
+            if (is_braille(source.codepoint)) {
+                fill_rect(cell, stride, 0, cell_w, 0, cell_h, source.bg);
+                draw_braille(cell, stride, cell_w, cell_h, source);
                 continue;
             }
             const GlyphAtlas::Lookup glyph = atlas.find(source.codepoint);

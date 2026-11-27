@@ -48,7 +48,7 @@ public:
     // `px_height` is the font size in pixels per em (8..64, InvalidArgument
     // otherwise). Fails with FontError if the data is not a TrueType font or a
     // codepoint of `charset` has no glyph (the codepoint is named in the
-    // detail; there is no fallback glyph). U+2580 needs no glyph.
+    // detail; there is no fallback glyph). U+2580 and U+2800..U+28FF need no glyph.
     [[nodiscard]] static Result<GlyphAtlas> create(std::span<const std::uint8_t> ttf,
                                                    std::uint32_t px_height,
                                                    std::u32string_view charset);
@@ -70,7 +70,7 @@ public:
         return static_cast<float>(cell_w_) / static_cast<float>(cell_h_);
     }
 
-    // Allocation-free; U+2580 is not an atlas glyph and is never found.
+    // Allocation-free; U+2580 and U+2800..U+28FF are never atlas glyphs.
     [[nodiscard]] Lookup find(char32_t codepoint) const noexcept;
 
 private:
@@ -89,8 +89,9 @@ private:
 };
 
 // Draws `frame` into `out` (SPEC 7.1): each cell is filled with `bg`, U+2580
-// gets `fg` on its top half (rows below cell_px_h / 2) and `bg` below, every
-// other glyph is its coverage bitmap blended from `bg` to `fg`.
+// gets `fg` on its top half (rows below cell_px_h / 2) and `bg` below, a Braille
+// codepoint gets one solid `fg` rectangle per raised dot, and every other glyph
+// is its coverage bitmap blended from `bg` to `fg`.
 //
 // The output is cols * cell_px_w by rows * cell_px_h pixels. A canvas over
 // kMaxSourceDim per axis or kMaxSourcePixels fails with LimitExceeded before
