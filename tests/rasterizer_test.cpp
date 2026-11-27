@@ -57,6 +57,7 @@ constexpr Rgb kWhite{255, 255, 255};
 constexpr Rgb kRed{200, 30, 30};
 constexpr Rgb kBlue{20, 40, 220};
 constexpr std::uint32_t kPx = 16;
+constexpr char32_t kBraille = 0x2800;  // U+2800, the pattern without dots
 
 [[nodiscard]] AsciiFrame make_frame(std::uint32_t cols, std::uint32_t rows, char32_t codepoint,
                                     Rgb fg, Rgb bg) {
@@ -84,6 +85,26 @@ constexpr std::uint32_t kPx = 16;
 }
 
 [[nodiscard]] bool same(Rgb a, Rgb b) { return a.r == b.r && a.g == b.g && a.b == b.b; }
+
+// Pixel rectangle [x0, x1) x [y0, y1).
+struct Rect {
+    std::uint32_t x0 = 0;
+    std::uint32_t x1 = 0;
+    std::uint32_t y0 = 0;
+    std::uint32_t y1 = 0;
+};
+
+// True if exactly the pixels inside `rect` are `inside` and all others `outside`.
+[[nodiscard]] bool only_rect(const RgbaImage& image, const Rect& rect, Rgb inside, Rgb outside) {
+    bool ok = true;
+    for (std::uint32_t y = 0; y < image.height; ++y) {
+        for (std::uint32_t x = 0; x < image.width; ++x) {
+            const bool in = x >= rect.x0 && x < rect.x1 && y >= rect.y0 && y < rect.y1;
+            ok = ok && same(pixel(image, x, y), in ? inside : outside);
+        }
+    }
+    return ok;
+}
 
 }  // namespace
 
@@ -215,6 +236,68 @@ VGLYPH_TEST(rasterize_blends_a_glyph_between_background_and_foreground) {
     VGLYPH_CHECK(pixel(image, 0, 0).r == 0);  // a cell corner stays background
 }
 
+VGLYPH_TEST(rasterize_draws_each_braille_dot_in_its_sub_cell) {
+    struct Dot {
+        unsigned bit;
+        std::uint32_t col;
+        std::uint32_t row;
+    };
+    constexpr Dot kDots[] = {{0x01, 0, 0}, {0x02, 0, 1}, {0x04, 0, 2}, {0x40, 0, 3},
+                             {0x08, 1, 0}, {0x10, 1, 1}, {0x20, 1, 2}, {0x80, 1, 3}};
+    for (const std::uint32_t px : {8U, 16U, 33U}) {
+        const GlyphAtlas atlas = make_atlas(U" ", px);
+        const std::uint32_t w = atlas.cell_px_w();
+        const std::uint32_t h = atlas.cell_px_h();
+        for (const Dot& dot : kDots) {
+            // SPEC 7.1: the sub-cell, inset by a quarter of its size on each side.
+            const std::uint32_t left = dot.col * w / 2;
+            const std::uint32_t right = (dot.col + 1) * w / 2;
+            const std::uint32_t top = dot.row * h / 4;
+            const std::uint32_t bottom = (dot.row + 1) * h / 4;
+            const std::uint32_t dx = (right - left) / 4;
+            const std::uint32_t dy = (bottom - top) / 4;
+            const Rect rect{left + dx, right - dx, top + dy, bottom - dy};
+            RgbaImage image;
+            VGLYPH_CHECK(rasterize(make_frame(1, 1, kBraille + dot.bit, kRed, kBlue), atlas, image).ok());
+            VGLYPH_CHECK(only_rect(image, rect, kRed, kBlue));
+        }
+    }
+}
+
+VGLYPH_TEST(rasterize_places_braille_dots_in_the_default_cell) {
+    const GlyphAtlas atlas = make_atlas(U" ");  // 10x22 cells
+    RgbaImage image;
+    VGLYPH_CHECK(rasterize(make_frame(1, 1, kBraille + 0x01, kRed, kBlue), atlas, image).ok());
+    VGLYPH_CHECK(only_rect(image, Rect{1, 4, 1, 4}, kRed, kBlue));
+    // The last dot of the second cell: offset by one cell width.
+    AsciiFrame two = make_frame(2, 1, kBraille, kRed, kBlue);
+    two.cells[1].codepoint = kBraille + 0x80;
+    VGLYPH_CHECK(rasterize(two, atlas, image).ok());
+    VGLYPH_CHECK(only_rect(image, Rect{16, 19, 17, 21}, kRed, kBlue));
+}
+
+VGLYPH_TEST(rasterize_leaves_a_blank_braille_cell_as_background) {
+    const GlyphAtlas atlas = make_atlas(U" ");
+    RgbaImage image;
+    VGLYPH_CHECK(rasterize(make_frame(2, 1, kBraille, kRed, kBlue), atlas, image).ok());
+    VGLYPH_CHECK(only_rect(image, Rect{}, kRed, kBlue));
+}
+
+VGLYPH_TEST(atlas_needs_no_glyph_for_braille) {
+    const std::u32string charset{U' ', kBraille, kBraille + 0xFF};
+    const Result<GlyphAtlas> atlas = GlyphAtlas::create_default(kPx, charset);
+    VGLYPH_CHECK(atlas.value_if() != nullptr);
+    if (atlas.value_if() != nullptr) {
+        VGLYPH_CHECK(atlas.value_if()->find(U' ').found);
+        VGLYPH_CHECK(!atlas.value_if()->find(kBraille).found);
+        VGLYPH_CHECK(!atlas.value_if()->find(kBraille + 0xFF).found);
+    }
+    // The codepoints around the block still need a glyph.
+    const std::u32string outside{U' ', kBraille + 0x100};
+    const Result<GlyphAtlas> missing = GlyphAtlas::create_default(kPx, outside);
+    VGLYPH_CHECK(missing.error_if() != nullptr);
+}
+
 VGLYPH_TEST(rasterize_places_cells_row_major) {
     const GlyphAtlas atlas = make_atlas(U" @");
     AsciiFrame frame = make_frame(2, 2, U' ', kWhite, kBlack);
@@ -272,7 +355,9 @@ VGLYPH_TEST(rasterize_does_not_allocate_in_a_loop) {
     AsciiFrame frame = make_frame(40, 12, U' ', kWhite, kBlack);
     const std::u32string ramp = U" .:-=+*#%@";
     for (std::size_t i = 0; i < frame.cells.size(); ++i) {
-        frame.cells[i].codepoint = i % 7 == 0 ? kUpperHalfBlock : ramp[i % ramp.size()];
+        frame.cells[i].codepoint = i % 7 == 0   ? kUpperHalfBlock
+                                   : i % 5 == 0 ? kBraille + static_cast<char32_t>(i % 256)
+                                                : ramp[i % ramp.size()];
         frame.cells[i].fg = Rgb{static_cast<std::uint8_t>(i), 200, 90};
     }
     RgbaImage image;
