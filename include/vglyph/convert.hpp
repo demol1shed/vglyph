@@ -18,7 +18,7 @@ inline constexpr std::uint32_t kMaxGridRows = 1024;
 inline constexpr std::uint32_t kMaxSourceDim = 16384;
 inline constexpr std::uint64_t kMaxSourcePixels = 67'108'864;  // 64 megapixels
 
-enum class RenderMode { Ascii, HalfBlock, SobelAscii };
+enum class RenderMode { Ascii, HalfBlock, SobelAscii, Braille };
 enum class ColorMode { Mono, Grayscale, TrueColorFg, TrueColorFgBg };
 enum class DitherMode { None };
 
@@ -44,12 +44,13 @@ struct ConvertConfig {
 struct GridSize {
     std::uint32_t cols = 0;
     std::uint32_t rows = 0;
-    std::uint32_t sample_w = 0;    // pixels: cols
-    std::uint32_t sample_h = 0;    // pixels: rows, or 2 * rows (HalfBlock)
+    std::uint32_t sample_w = 0;    // pixels: cols, or 2 * cols (Braille)
+    std::uint32_t sample_h = 0;    // pixels: rows, 2 * rows (HalfBlock), 4 * rows (Braille)
     std::uint64_t sample_bytes = 0;  // sample_w * sample_h * 3, overflow-checked
 };
 
-// Every glyph the render mode can emit: the set a glyph atlas has to cover.
+// The glyphs a glyph atlas has to cover for the render mode. Braille dots are
+// drawn without the font, so that mode only asks for a space.
 [[nodiscard]] std::u32string output_glyphs(const ConvertConfig& config);
 
 // Computes the grid for a source of src_w x src_h pixels. Never crops or
@@ -60,9 +61,10 @@ struct GridSize {
 // Converts a tightly packed RGB24 buffer, already scaled to the sampling grid
 // from compute_grid(), into `out` (SPEC sections 4.2, 4.3).
 //
-// `width` must equal config.target_cols. `height` is the number of grid rows
-// (Ascii, SobelAscii) or twice that (HalfBlock, so it must be even); a non-zero
-// config.target_rows must match the resulting row count.
+// `width` and `height` are the grid size times the mode's pixels per cell: 1x1
+// (Ascii, SobelAscii), 1x2 (HalfBlock) or 2x4 (Braille). `width` must match
+// config.target_cols, `height` must be a whole number of rows, and a non-zero
+// config.target_rows must match that row count.
 //
 // On any error `out` is left untouched. On success `out.cells` is resized
 // only if the grid size changed, so repeated calls reuse one buffer and do
