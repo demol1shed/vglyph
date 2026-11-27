@@ -91,7 +91,7 @@ The converter never returns an `AsciiFrame` by value. It writes into a caller-ow
 | `render_mode` | enum | `Ascii` | `Ascii`, `HalfBlock` (v1); `Braille`, `SobelAscii` (Phase 5) |
 | `color_mode` | enum | `TrueColorFg` | `Mono`, `Grayscale`, `TrueColorFg`, `TrueColorFgBg` |
 | `dither_mode` | enum | `None` | `None` (v1); `Bayer4x4`, `FloydSteinberg` (Phase 5) |
-| `charset` | UTF-32 ramp (dark to bright) | `" .:-=+*#%@"` | Customizable ordered character ramp (at least 2 codepoints) |
+| `charset` | UTF-32 ramp (dark to bright) | `" .:-=+*#%@"` | Customizable ordered character ramp (at least 2 codepoints); not used by `HalfBlock` and `Braille` |
 | `bg_color` | `Rgb` | `(0, 0, 0)` | Default background color when `color_mode` does not set per-cell background |
 | `brightness` | `float` (`-1.0..1.0`) | `0.0` | Linear additive brightness adjustment |
 | `contrast` | `float` (`0.0..4.0`) | `1.0` | Contrast multiplier centered around mid-gray (`0.5`) |
@@ -144,11 +144,44 @@ If `invert == true`, luminance becomes $Y' = 1 - Y$.
 - **Unicode Half-Block (`HalfBlock`, v1):** Each cell consumes two vertically stacked pixels (top $p_t$, bottom $p_b$) and sets `codepoint = U+2580` (`▀`). Doubles effective vertical resolution in TrueColor terminals and visual exports. The color mode decides how `fg` (top half) and `bg` (bottom half) are derived:
   - `TrueColorFg` and `TrueColorFgBg`: `fg = p_t`, `bg = p_b` (the `0.25` darkening of `TrueColorFgBg` does not apply).
   - `Grayscale`: `fg = (g_t, g_t, g_t)` and `bg = (g_b, g_b, g_b)` with $g = \operatorname{round}(255 \cdot Y')$ of the respective pixel.
-  - `Mono`: each half is thresholded at $Y' \ge 0.5$; a set half uses `(255, 255, 255)`, an unset half uses `config.bg_color`. `fg` carries the top half and `bg` the bottom half.
-- **Modular Phase 5 Extensions (Same `Cell` Output Contract):**
-  - **Sobel Edge-Aware ASCII (`SobelAscii`):** Computes $3 \times 3$ Sobel gradients $(G_x, G_y)$ on the luminance plane; where magnitude exceeds threshold, replaces the ramp glyph with directional strokes (`|`, `-`, `/`, `\`) based on gradient angle $\theta = \operatorname{atan2}(G_y, G_x)$.
-  - **Braille (`Braille`):** Thresholds each $2 \times 4$ pixel block (with optional dithering) into Unicode Braille range `U+2800..U+28FF`, assigning the block's mean color to `fg`.
-  - **Dithering (`Bayer4x4` / `FloydSteinberg`):** Applied to luminance prior to ramp quantization or Braille thresholding.
+  - `Mono`: each half is thresholded at $Y' \ge 0.5$ (or dithered, see below); a set half uses `(255, 255, 255)`, an unset half uses `config.bg_color`. `fg` carries the top half and `bg` the bottom half.
+- **Sobel Edge-Aware ASCII (`SobelAscii`, Phase 5):** Each cell gets the `Ascii` glyph and colors; cells on an edge then get a stroke glyph instead.
+  - $3 \times 3$ Sobel gradients are computed on $Y'$ of the $C \times R$ sampling plane, with $y$ growing downward. A neighbor outside the plane repeats the nearest pixel inside it.
+    $$G_x = \begin{bmatrix} -1 & 0 & 1 \\ -2 & 0 & 2 \\ -1 & 0 & 1 \end{bmatrix} \qquad G_y = \begin{bmatrix} -1 & -2 & -1 \\ 0 & 0 & 0 \\ 1 & 2 & 1 \end{bmatrix}$$
+    Each entry is the weight of the neighbor at that position (first row = the row above); the matrices are applied as written, not flipped.
+  - A cell is on an edge when $\sqrt{G_x^2 + G_y^2} / 4 \ge 0.25$ (a full black-to-white step scores `1.0`). The threshold is a fixed constant.
+  - The stroke follows the gradient angle $\theta = \operatorname{atan2}(G_y, G_x)$, folded into $[0^\circ, 180^\circ)$:
+
+    | $\theta$ | Glyph |
+    | :--- | :--- |
+    | $[0^\circ, 22.5^\circ)$ and $[157.5^\circ, 180^\circ)$ | `\|` |
+    | $[22.5^\circ, 67.5^\circ)$ | `/` |
+    | $[67.5^\circ, 112.5^\circ)$ | `-` |
+    | $[112.5^\circ, 157.5^\circ)$ | `\` |
+
+  - Only the glyph changes; colors stay as in `Ascii`. The four strokes are used whatever the `charset` is.
+  - Gradients use undithered $Y'$. With dithering, every cell (edge cells included) is quantized and, for Floyd-Steinberg, diffuses its error before the glyph is replaced.
+- **Braille (`Braille`, Phase 5):** Each cell consumes a $2 \times 4$ pixel block and sets `codepoint = U+2800 + mask`. The mask bit of the pixel at (column, row) inside the block is:
+
+  | Row | Column 0 | Column 1 |
+  | :--- | :--- | :--- |
+  | 0 | `0x01` | `0x08` |
+  | 1 | `0x02` | `0x10` |
+  | 2 | `0x04` | `0x20` |
+  | 3 | `0x40` | `0x80` |
+
+  - A dot is lit when its pixel quantizes to level `1` of $N = 2$ levels (see Dithering). `charset` is validated but not used.
+  - Colors are taken over the set $S$: the pixels whose dots are lit in the final mask (after dithering), or all 8 pixels if none is lit.
+    - `Mono`: `fg = (255, 255, 255)`, `bg = config.bg_color`.
+    - `Grayscale`: `fg = (g, g, g)` where $g = \operatorname{round}(255 \cdot \overline{Y'})$ over $S$, `bg = config.bg_color`.
+    - `TrueColorFg`: `fg` is the per-channel mean of $(R_2, G_2, B_2)$ over $S$ scaled to `0..255`, `bg = config.bg_color`.
+    - `TrueColorFgBg`: `fg` as in `TrueColorFg`, `bg_c = round(0.25 * fg_c)`.
+- **Dithering (`dither_mode`, Phase 5):** Applies only where luminance is quantized to $N$ levels: the ramp index in `Ascii` and `SobelAscii` ($N$ = `charset` length), Braille dots and `HalfBlock` `Mono` halves ($N = 2$). It only picks levels; no color value is computed from dithered luminance, and `HalfBlock` in the other color modes is not affected. $(x, y)$ are sampling-plane coordinates.
+  - `None`: $\text{idx} = \min(N - 1, \lfloor Y' \cdot N \rfloor)$, which for $N = 2$ is $Y' \ge 0.5$.
+  - The dithered modes treat level `idx` as the value $\text{idx} / (N - 1)$, so that the average level of an area follows $Y'$.
+  - `Bayer4x4`: $\text{idx} = \min(N - 1, \lfloor Y' \cdot (N - 1) + b \rfloor)$ with $b = (M[y \bmod 4][x \bmod 4] + 0.5) / 16$ and
+    $$M = \begin{bmatrix} 0 & 8 & 2 & 10 \\ 12 & 4 & 14 & 6 \\ 3 & 11 & 1 & 9 \\ 15 & 7 & 13 & 5 \end{bmatrix}$$
+  - `FloydSteinberg`: with $v = Y' + e(x, y)$, $\text{idx} = \operatorname{clamp}(\operatorname{round}(v \cdot (N - 1)),\ 0,\ N - 1)$. The error $v - \text{idx} / (N - 1)$ is added to $e$ at $(x+1, y)$, $(x-1, y+1)$, $(x, y+1)$ and $(x+1, y+1)$ with weights `7/16`, `3/16`, `5/16` and `1/16`. The plane is walked top to bottom, each row left to right; shares that leave the plane are dropped. $e$ starts at zero for every frame, so a frame's output depends on that frame alone; in video the noise pattern can shimmer, where `Bayer4x4` stays stable.
 
 ---
 
@@ -202,10 +235,11 @@ To prevent memory exhaustion and integer overflow on malformed or adversarial in
 ### 7.1 Glyph Atlas Rasterizer (`stb_truetype`)
 - **Default Font:** *JetBrains Mono* Regular (SIL OFL), embedded directly into `vglyph-core` so visual export works out of the box with zero external asset lookup.
 - **Custom Font Support:** Users may supply a local TrueType (`.ttf`) path and a target font pixel height (`8..64 px`, default `16 px`). CFF-based `.otf` files are not supported in v1; if `stb_truetype` cannot load the file, initialization fails with `FontError`. The CLI reads at most 16 MiB of font data (`LimitExceeded` above that); a path that is not a readable regular file is `IoError`. Custom fonts must come from a trusted source: `stb_truetype` does not range-check the offsets inside a font file, so a crafted font can make it read out of bounds. The size cap does not protect against this.
-- **Atlas Caching:** On font/size initialization, query exact monospace metrics (`advance_width`, `ascent`, `descent`, `line_gap`) to determine uniform `cell_px_w` and `cell_px_h`. Pre-rasterize all glyphs in the active ramp into an 8-bit coverage atlas. If any codepoint of the active charset has no glyph in the font, atlas creation fails with `FontError` and the missing codepoint is named in `detail`; there is no fallback glyph.
+- **Atlas Caching:** On font/size initialization, query exact monospace metrics (`advance_width`, `ascent`, `descent`, `line_gap`) to determine uniform `cell_px_w` and `cell_px_h`. Pre-rasterize the glyphs the render mode can emit into an 8-bit coverage atlas: the active ramp (`Ascii`, `HalfBlock`), the ramp plus `|`, `-`, `/`, `\` (`SobelAscii`), or none (`Braille`). `U+2580` and `U+2800..U+28FF` are drawn without the font, so they need no glyph, also when they come from a custom charset. If any other of these codepoints has no glyph in the font, atlas creation fails with `FontError` and the missing codepoint is named in `detail`; there is no fallback glyph.
 - **Frame Rasterization (`AsciiFrame` → `RGBA32`):**
   - Fill cell background with `cell.bg`.
   - For `HalfBlock` (`▀`), fill top half with `cell.fg` and bottom half with `cell.bg` directly (pixel-sharp, bypassing font hinting).
+  - For Braille (`U+2800..U+28FF`), draw each lit dot as a solid `cell.fg` rectangle over `cell.bg`. The cell is split into $2 \times 4$ sub-cells with bounds $x_i = \lfloor i \cdot \text{cell\_px\_w} / 2 \rfloor$ and $y_j = \lfloor j \cdot \text{cell\_px\_h} / 4 \rfloor$; a dot is its sub-cell inset on each side by a quarter of the sub-cell's size on that axis, rounded down.
   - For character glyphs, alpha-blend the cached 8-bit glyph bitmap over `cell.bg` using `cell.fg`.
   - Output pixel dimensions: `out_w = cols * cell_px_w`, `out_h = rows * cell_px_h`. An output over 16384 pixels on either axis or over 67,108,864 pixels (64 megapixels) fails with `LimitExceeded` before anything is allocated.
 
