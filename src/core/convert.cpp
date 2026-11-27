@@ -8,6 +8,7 @@
 #include <string>
 #include <string_view>
 
+#include "braille.hpp"
 #include "checked_math.hpp"
 
 namespace vglyph {
@@ -194,6 +195,76 @@ void fill_half_block(const std::uint8_t* rgb, const ConvertConfig& config, const
     }
 }
 
+// Colors of one Braille cell, averaged over the pixels whose bit is set in `dots`
+// (never 0). `block` is the cell's top-left pixel in a plane of `stride` bytes per row.
+void color_braille_cell(const std::uint8_t* block, std::size_t stride, unsigned dots,
+                        const ConvertConfig& config, const Lut& lut, Cell& cell) noexcept {
+    float r = 0.0f;
+    float g = 0.0f;
+    float b = 0.0f;
+    float y = 0.0f;
+    float count = 0.0f;
+    for (std::size_t row = 0; row < kBrailleDotBit.size(); ++row) {
+        for (std::size_t col = 0; col < 2; ++col) {
+            if ((dots & kBrailleDotBit[row][col]) == 0) {
+                continue;
+            }
+            const std::uint8_t* px = block + row * stride + col * 3;
+            r += lut[px[0]];
+            g += lut[px[1]];
+            b += lut[px[2]];
+            y += luminance(lut, px, config.invert);
+            count += 1.0f;
+        }
+    }
+    cell.bg = config.bg_color;
+    switch (config.color_mode) {
+        case ColorMode::Mono:
+            cell.fg = kWhite;
+            break;
+        case ColorMode::Grayscale:
+            cell.fg = gray(y / count);
+            break;
+        case ColorMode::TrueColorFg:
+        case ColorMode::TrueColorFgBg:
+            cell.fg = Rgb{to_byte(r / count), to_byte(g / count), to_byte(b / count)};
+            if (config.color_mode == ColorMode::TrueColorFgBg) {
+                cell.bg = quarter(cell.fg);
+            }
+            break;
+    }
+}
+
+// Raises the dots first, then colors each cell from the dots it ended up with.
+void fill_braille(const std::uint8_t* rgb, const ConvertConfig& config, const Lut& lut,
+                  AsciiFrame& out) noexcept {
+    const std::size_t cols = out.cols;
+    const std::size_t width = cols * 2;
+    const std::size_t height = static_cast<std::size_t>(out.rows) * 4;
+    for (Cell& cell : out.cells) {
+        cell.codepoint = kBrailleBlank;
+    }
+    const std::uint8_t* px = rgb;
+    for (std::size_t y = 0; y < height; ++y) {
+        for (std::size_t x = 0; x < width; ++x, px += 3) {
+            if (luminance(lut, px, config.invert) >= 0.5f) {
+                out.cells[(y / 4) * cols + x / 2].codepoint |=
+                    static_cast<char32_t>(kBrailleDotBit[y % 4][x % 2]);
+            }
+        }
+    }
+    const std::size_t stride = width * 3;
+    Cell* cell = out.cells.data();
+    for (std::size_t row = 0; row < out.rows; ++row) {
+        const std::uint8_t* block = rgb + row * 4 * stride;
+        for (std::size_t col = 0; col < cols; ++col, block += 2 * 3, ++cell) {
+            const auto raised = static_cast<unsigned>(cell->codepoint - kBrailleBlank);
+            // A cell without dots takes its color from all eight pixels.
+            color_braille_cell(block, stride, raised == 0 ? 0xFFU : raised, config, lut, *cell);
+        }
+    }
+}
+
 // Sampling-plane pixels per grid cell on each axis (SPEC section 4.1).
 struct CellPixels {
     std::uint32_t w = 1;
@@ -207,6 +278,8 @@ struct CellPixels {
             break;
         case RenderMode::HalfBlock:
             return {1, 2};
+        case RenderMode::Braille:
+            return {2, 4};
     }
     return {};
 }
@@ -245,6 +318,9 @@ Status validate(const ConvertConfig& config) {
 }
 
 std::u32string output_glyphs(const ConvertConfig& config) {
+    if (config.render_mode == RenderMode::Braille) {
+        return U" ";  // dots need no glyph, but an atlas cannot be empty
+    }
     std::u32string glyphs = config.charset;
     if (config.render_mode == RenderMode::SobelAscii) {
         glyphs += kStrokes;
@@ -355,6 +431,9 @@ Status convert(std::span<const std::uint8_t> rgb24, std::uint32_t width, std::ui
             break;
         case RenderMode::SobelAscii:
             fill_sobel(rgb24.data(), config, lut, out);
+            break;
+        case RenderMode::Braille:
+            fill_braille(rgb24.data(), config, lut, out);
             break;
     }
     return Status::success();
