@@ -88,9 +88,13 @@ VGLYPH_TEST(output_format_comes_from_flag_extension_or_stdout) {
     VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "noext"}), "cannot infer"));
 }
 
+VGLYPH_TEST(mode_sobel_selects_the_edge_aware_mode) {
+    const auto o = ok(parse({"convert", "a", "-o", "o.txt", "--mode", "sobel"}));
+    VGLYPH_CHECK(o.config.render_mode == RenderMode::SobelAscii);
+}
+
 VGLYPH_TEST(unfinished_features_are_rejected_as_not_implemented) {
     VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.txt", "--mode", "braille"}), "not implemented"));
-    VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.txt", "--mode", "sobel"}), "not implemented"));
     VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.txt", "--dither", "bayer"}), "not implemented"));
     VGLYPH_CHECK(usage_error(parse({"convert", "a", "-o", "o.txt", "--dither", "floyd"}), "not implemented"));
 }

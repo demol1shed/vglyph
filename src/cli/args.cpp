@@ -208,8 +208,10 @@ constexpr std::array<FormatName, 5> kFormats{{
                 c.render_mode = RenderMode::Ascii;
             } else if (value == "halfblock") {
                 c.render_mode = RenderMode::HalfBlock;
-            } else if (value == "braille" || value == "sobel") {
-                return not_implemented("--mode " + std::string(value));
+            } else if (value == "sobel") {
+                c.render_mode = RenderMode::SobelAscii;
+            } else if (value == "braille") {
+                return not_implemented("--mode braille");
             } else {
                 return bad_value(spec.long_name, value, "ascii, halfblock, braille, sobel");
             }
@@ -355,7 +357,7 @@ std::string_view usage_text() noexcept {
            "  -H, --height <rows>     Grid height in cells, 0..1024 (0 = automatic)\n"
            "      --aspect <float>    Cell width / height, 0.1..4.0 (0.5;\n"
            "                          png, gif, mp4: the font's cell shape)\n"
-           "      --mode <mode>       ascii, halfblock (braille, sobel: not yet)\n"
+           "      --mode <mode>       ascii, halfblock, sobel (braille: not yet)\n"
            "      --color <mode>      mono, gray, fg, fgbg (fg)\n"
            "      --charset <string>  Dark-to-bright glyph ramp, at least 2 glyphs\n"
            "      --dither <mode>     none (bayer, floyd: not yet)\n"

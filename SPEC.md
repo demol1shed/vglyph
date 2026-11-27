@@ -272,7 +272,7 @@ To prevent memory exhaustion and integer overflow on malformed or adversarial in
 | `-w, --width <cols>` | `4..2048` (fitted to the terminal in `play`, `100` in `convert`) | `convert`, `play` | Output grid width in cells |
 | `-H, --height <rows>` | `0` (auto) | `convert`, `play` | Explicit grid height |
 | `--aspect <float>` | `0.5`; the font's cell shape for visual export | `convert`, `play` | Override cell aspect ratio |
-| `--mode <mode>` | `ascii`, `halfblock`, `braille`, `sobel` | `convert`, `play` | Rendering mode (`braille` and `sobel` are parsed but exit `2` with a "not implemented" error until Phase 5) |
+| `--mode <mode>` | `ascii`, `halfblock`, `braille`, `sobel` | `convert`, `play` | Rendering mode (`braille` is parsed but exits `2` with a "not implemented" error until Phase 5) |
 | `--color <mode>` | `mono`, `gray`, `fg`, `fgbg` | `convert`, `play` | Color mapping mode |
 | `--charset <string>` | `" .:-=+*#%@"` | `convert`, `play` | Custom dark-to-bright glyph ramp |
 | `--dither <mode>` | `none`, `bayer`, `floyd` | `convert`, `play` | Dithering algorithm (`bayer` and `floyd` are parsed but exit `2` with a "not implemented" error until Phase 5) |
