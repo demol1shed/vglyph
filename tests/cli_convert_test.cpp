@@ -336,6 +336,41 @@ VGLYPH_TEST(convert_sobel_draws_strokes_the_charset_does_not_hold) {
                           "--charset", " #"}) == 0);
 }
 
+VGLYPH_TEST(convert_braille_writes_text_and_draws_dots) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const fs::path in = dir.file("step.png");
+    std::vector<std::uint8_t> rgb = solid_rgb(8, 8, kBlack);
+    for (std::size_t i = 0; i < rgb.size(); ++i) {
+        if ((i / 3) % 8 < 4) {
+            rgb[i] = 255;
+        }
+    }
+    VGLYPH_CHECK(write_png(in, 8, 8, rgb).ok());
+    const fs::path txt = dir.file("out.txt");
+    const fs::path png = dir.file("out.png");
+
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(txt), "-w", "4", "--mode", "braille"}) == 0);
+    // Two U+28FF (all dots) then two U+2800 (none), as UTF-8.
+    const std::string row = "\xE2\xA3\xBF\xE2\xA3\xBF\xE2\xA0\x80\xE2\xA0\x80\n";
+    VGLYPH_CHECK(read_text(txt) == row + row);
+
+    // The default font has no Braille glyphs: the dots are drawn without it.
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(png), "-w", "4", "--mode", "braille",
+                          "--color", "mono"}) == 0);
+    const Decoded d = decode(png);
+    VGLYPH_CHECK(is_size(d, 4 * kCellW, 2 * kCellH));
+    VGLYPH_CHECK(d.frames.size() == 1);
+    if (d.frames.size() == 1 && is_size(d, 4 * kCellW, 2 * kCellH)) {
+        const auto red_at = [&](std::size_t x, std::size_t y) {
+            return d.frames.front().rgb24[(y * 4 * kCellW + x) * 3];
+        };
+        VGLYPH_CHECK(red_at(1, 1) == 255);   // inside the first dot
+        VGLYPH_CHECK(red_at(0, 0) == 0);     // the gap around it
+        VGLYPH_CHECK(red_at(21, 1) == 0);    // the unraised right half
+    }
+}
+
 VGLYPH_TEST(convert_selects_the_requested_gif_frame) {
     const TempDir dir;
     VGLYPH_CHECK(dir.ok());
