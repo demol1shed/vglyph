@@ -27,12 +27,15 @@ void put(std::uint8_t* pixel, Rgb color) noexcept {
     pixel[3] = 255;
 }
 
-// Fills rows [row_begin, row_end) of one cell with a single color.
-void fill_rows(std::uint8_t* cell, std::size_t stride, std::uint32_t cell_w,
-               std::uint32_t row_begin, std::uint32_t row_end, Rgb color) noexcept {
+// Fills columns [col_begin, col_end) of rows [row_begin, row_end) of one cell
+// with a single color.
+void fill_rect(std::uint8_t* cell, std::size_t stride, std::uint32_t col_begin,
+               std::uint32_t col_end, std::uint32_t row_begin, std::uint32_t row_end,
+               Rgb color) noexcept {
     for (std::uint32_t row = row_begin; row < row_end; ++row) {
-        std::uint8_t* pixel = cell + static_cast<std::size_t>(row) * stride;
-        for (std::uint32_t col = 0; col < cell_w; ++col) {
+        std::uint8_t* pixel = cell + static_cast<std::size_t>(row) * stride +
+                              static_cast<std::size_t>(col_begin) * kBytesPerPixel;
+        for (std::uint32_t col = col_begin; col < col_end; ++col) {
             put(pixel, color);
             pixel += kBytesPerPixel;
         }
@@ -96,8 +99,8 @@ Status rasterize(const AsciiFrame& frame, const GlyphAtlas& atlas, RgbaImage& ou
                                  static_cast<std::size_t>(row) * cell_h * stride +
                                  static_cast<std::size_t>(col) * cell_w * kBytesPerPixel;
             if (source.codepoint == kUpperHalfBlock) {
-                fill_rows(cell, stride, cell_w, 0, half, source.fg);
-                fill_rows(cell, stride, cell_w, half, cell_h, source.bg);
+                fill_rect(cell, stride, 0, cell_w, 0, half, source.fg);
+                fill_rect(cell, stride, 0, cell_w, half, cell_h, source.bg);
                 continue;
             }
             const GlyphAtlas::Lookup glyph = atlas.find(source.codepoint);
@@ -111,7 +114,7 @@ Status rasterize(const AsciiFrame& frame, const GlyphAtlas& atlas, RgbaImage& ou
                                                   : "a codepoint") +
                                       " is not in the glyph atlas");
             }
-            fill_rows(cell, stride, cell_w, 0, cell_h, source.bg);
+            fill_rect(cell, stride, 0, cell_w, 0, cell_h, source.bg);
             if (glyph.coverage != nullptr) {
                 draw_glyph(cell, stride, cell_w, cell_h, glyph.coverage, source);
             }
