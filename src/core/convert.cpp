@@ -194,6 +194,23 @@ void fill_half_block(const std::uint8_t* rgb, const ConvertConfig& config, const
     }
 }
 
+// Sampling-plane pixels per grid cell on each axis (SPEC section 4.1).
+struct CellPixels {
+    std::uint32_t w = 1;
+    std::uint32_t h = 1;
+};
+
+[[nodiscard]] CellPixels cell_pixels(RenderMode mode) noexcept {
+    switch (mode) {
+        case RenderMode::Ascii:
+        case RenderMode::SobelAscii:
+            break;
+        case RenderMode::HalfBlock:
+            return {1, 2};
+    }
+    return {};
+}
+
 }  // namespace
 
 Status validate(const ConvertConfig& config) {
@@ -270,8 +287,9 @@ Result<GridSize> compute_grid(std::uint32_t src_w, std::uint32_t src_h,
     GridSize grid;
     grid.cols = config.target_cols;
     grid.rows = rows;
-    grid.sample_w = grid.cols;
-    grid.sample_h = config.render_mode == RenderMode::HalfBlock ? rows * 2 : rows;
+    const CellPixels px = cell_pixels(config.render_mode);
+    grid.sample_w = grid.cols * px.w;
+    grid.sample_h = grid.rows * px.h;
 
     std::uint64_t sample_pixels = 0;
     if (!checked_mul(grid.sample_w, grid.sample_h, sample_pixels) ||
@@ -286,18 +304,19 @@ Status convert(std::span<const std::uint8_t> rgb24, std::uint32_t width, std::ui
     if (const Status s = validate(config); !s.ok()) {
         return s;
     }
-    if (width != config.target_cols) {
+    const CellPixels px = cell_pixels(config.render_mode);
+    const std::uint32_t sample_w = config.target_cols * px.w;  // validated: cannot overflow
+    if (width != sample_w) {
         return make_error(ErrorCode::InvalidArgument,
-                          "buffer width " + std::to_string(width) + " must equal target_cols " +
-                              std::to_string(config.target_cols));
+                          "buffer width " + std::to_string(width) + " must be " +
+                              std::to_string(sample_w) + " (target_cols x " +
+                              std::to_string(px.w) + ")");
     }
-    const bool half_block = config.render_mode == RenderMode::HalfBlock;
-    if (height == 0 || (half_block && height % 2 != 0)) {
+    if (height == 0 || height % px.h != 0) {
         return make_error(ErrorCode::InvalidArgument,
-                          half_block ? "HalfBlock buffer height must be even and non-zero"
-                                     : "buffer height must be non-zero");
+                          "buffer height must be a non-zero multiple of " + std::to_string(px.h));
     }
-    const std::uint32_t rows = half_block ? height / 2 : height;
+    const std::uint32_t rows = height / px.h;
     if (rows > kMaxGridRows) {
         return make_error(ErrorCode::LimitExceeded,
                           "grid height exceeds " + std::to_string(kMaxGridRows) + " rows");
@@ -319,11 +338,11 @@ Status convert(std::span<const std::uint8_t> rgb24, std::uint32_t width, std::ui
     }
 
     // Everything is validated: from here on `out` is modified.
-    const std::size_t cell_count = static_cast<std::size_t>(width) * rows;
+    const std::size_t cell_count = static_cast<std::size_t>(config.target_cols) * rows;
     if (out.cells.size() != cell_count) {
         out.cells.resize(cell_count);
     }
-    out.cols = width;
+    out.cols = config.target_cols;
     out.rows = rows;
 
     const Lut lut = build_lut(config);
