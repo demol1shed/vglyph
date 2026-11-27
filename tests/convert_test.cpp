@@ -92,6 +92,45 @@ std::uint8_t preprocessed(std::uint8_t gray, const ConvertConfig& c) {
     return out.cells.empty() ? std::uint8_t{0} : out.cells[0].fg.r;
 }
 
+// A width x height buffer whose pixel (x, y) is the gray `gray_at(x, y)`.
+template <class F>
+Bytes gray_plane(std::uint32_t width, std::uint32_t height, F gray_at) {
+    Bytes b;
+    for (std::uint32_t y = 0; y < height; ++y) {
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const std::uint8_t g = gray_at(x, y);
+            b.push_back(g);
+            b.push_back(g);
+            b.push_back(g);
+        }
+    }
+    return b;
+}
+
+// A Sobel config whose ramp shares no glyph with the four strokes.
+ConvertConfig sobel_config(std::uint32_t cols) {
+    ConvertConfig c;
+    c.target_cols = cols;
+    c.render_mode = RenderMode::SobelAscii;
+    c.charset = U" #";
+    return c;
+}
+
+AsciiFrame converted(const Bytes& rgb, std::uint32_t w, std::uint32_t h, const ConvertConfig& c) {
+    AsciiFrame out;
+    VGLYPH_CHECK(vglyph::convert(rgb, w, h, c, out).ok());
+    return out;
+}
+
+// The frame's glyphs, rows joined without a separator.
+std::u32string glyphs_of(const AsciiFrame& frame) {
+    std::u32string s;
+    for (const Cell& cell : frame.cells) {
+        s += cell.codepoint;
+    }
+    return s;
+}
+
 }  // namespace
 
 VGLYPH_TEST(ascii_maps_luminance_onto_ramp) {
@@ -346,6 +385,93 @@ VGLYPH_TEST(frame_buffer_is_reused_and_timing_is_preserved) {
     VGLYPH_CHECK(run(gray_rows(4, {0, 0, 0}), 4, 3, config4(), out).ok());
     VGLYPH_CHECK(out.rows == 3);
     VGLYPH_CHECK(out.cells.size() == 12);
+}
+
+VGLYPH_TEST(sobel_vertical_step_draws_bars_and_keeps_ascii_colors) {
+    const Bytes rgb = gray_plane(4, 4, [](std::uint32_t x, std::uint32_t) {
+        return static_cast<std::uint8_t>(x < 2 ? 0 : 255);
+    });
+    ConvertConfig c = sobel_config(4);
+    c.color_mode = ColorMode::TrueColorFgBg;
+    const AsciiFrame sobel = converted(rgb, 4, 4, c);
+    // Every row, the clamped top and bottom ones included.
+    VGLYPH_CHECK(glyphs_of(sobel) == U" ||# ||# ||# ||#");
+
+    c.render_mode = RenderMode::Ascii;
+    const AsciiFrame ascii = converted(rgb, 4, 4, c);
+    VGLYPH_CHECK(ascii.cells.size() == sobel.cells.size());
+    for (std::size_t i = 0; i < sobel.cells.size() && i < ascii.cells.size(); ++i) {
+        VGLYPH_CHECK(same(sobel.cells[i].fg, ascii.cells[i].fg));
+        VGLYPH_CHECK(same(sobel.cells[i].bg, ascii.cells[i].bg));
+    }
+}
+
+VGLYPH_TEST(sobel_horizontal_step_draws_dashes) {
+    const Bytes rgb = gray_rows(4, {0, 0, 255, 255});
+    VGLYPH_CHECK(glyphs_of(converted(rgb, 4, 4, sobel_config(4))) == U"    --------####");
+    // Brighter above gives the opposite gradient and the same stroke.
+    const Bytes flipped = gray_rows(4, {255, 255, 0, 0});
+    VGLYPH_CHECK(glyphs_of(converted(flipped, 4, 4, sobel_config(4))) == U"####--------    ");
+}
+
+VGLYPH_TEST(sobel_diagonal_steps_draw_slashes) {
+    // Interior cells only: a 3x3 kernel spreads a diagonal step over 4 diagonals.
+    const auto check = [](bool mirrored, char32_t expected) {
+        const auto k_of = [mirrored](std::uint32_t x, std::uint32_t y) {
+            return (mirrored ? 7 - x : x) + y;
+        };
+        const Bytes rgb = gray_plane(8, 8, [&](std::uint32_t x, std::uint32_t y) {
+            return static_cast<std::uint8_t>(k_of(x, y) >= 8 ? 255 : 0);
+        });
+        const AsciiFrame out = converted(rgb, 8, 8, sobel_config(8));
+        for (std::uint32_t y = 1; y < 7; ++y) {
+            for (std::uint32_t x = 1; x < 7; ++x) {
+                const std::uint32_t k = k_of(x, y);
+                const char32_t want = (k >= 6 && k <= 9) ? expected : (k < 6 ? U' ' : U'#');
+                VGLYPH_CHECK(out.cells[y * 8 + x].codepoint == want);
+            }
+        }
+    };
+    check(false, U'/');
+    check(true, U'\\');
+}
+
+VGLYPH_TEST(sobel_threshold_is_a_quarter_of_a_full_step) {
+    // A vertical step scores exactly its luminance difference: 63/255 < 0.25 < 64/255.
+    const auto step = [](std::uint8_t high) {
+        const Bytes rgb = gray_plane(4, 1, [high](std::uint32_t x, std::uint32_t) {
+            return static_cast<std::uint8_t>(x < 2 ? 0 : high);
+        });
+        return glyphs_of(converted(rgb, 4, 1, sobel_config(4)));
+    };
+    VGLYPH_CHECK(step(63) == U"    ");
+    VGLYPH_CHECK(step(64) == U" || ");
+}
+
+VGLYPH_TEST(sobel_flat_image_matches_ascii) {
+    const Bytes rgb = solid(4, 3, Rgb{90, 160, 200});
+    ConvertConfig c;
+    c.target_cols = 4;
+    const AsciiFrame ascii = converted(rgb, 4, 3, c);
+    c.render_mode = RenderMode::SobelAscii;
+    VGLYPH_CHECK(same(converted(rgb, 4, 3, c), ascii));
+}
+
+VGLYPH_TEST(sobel_invert_keeps_the_strokes) {
+    const Bytes rgb = gray_rows(4, {0, 0, 255, 255});
+    ConvertConfig c = sobel_config(4);
+    c.invert = true;
+    VGLYPH_CHECK(glyphs_of(converted(rgb, 4, 4, c)) == U"####--------    ");
+}
+
+VGLYPH_TEST(output_glyphs_adds_the_strokes_for_sobel_only) {
+    ConvertConfig c;
+    c.charset = U" #";
+    VGLYPH_CHECK(vglyph::output_glyphs(c) == U" #");
+    c.render_mode = RenderMode::HalfBlock;
+    VGLYPH_CHECK(vglyph::output_glyphs(c) == U" #");
+    c.render_mode = RenderMode::SobelAscii;
+    VGLYPH_CHECK(vglyph::output_glyphs(c) == U" #|-/\\");
 }
 
 VGLYPH_TEST_MAIN()
