@@ -2,12 +2,12 @@
 
 A fast, minimal, cross-platform ASCII art converter and player for photos, animated GIFs, and videos.
 
-> **Status: pre-alpha.** The conversion engine, the FFmpeg media reader, the glyph rasterizer and the `vglyph` CLI (`convert` to `.txt`/`.ans`/`.png`/`.gif`/`.mp4`, `play`, `info`) work. Braille, Sobel, dithering and the GUI are specified in [`SPEC.md`](SPEC.md) but not implemented yet.
+> **Status: pre-alpha.** The conversion engine, the FFmpeg media reader, the glyph rasterizer and the `vglyph` CLI (`convert` to `.txt`/`.ans`/`.png`/`.gif`/`.mp4`, `play`, `info`) work. Braille, dithering and the GUI are specified in [`SPEC.md`](SPEC.md) but not implemented yet.
 
 ## Planned features
 
 - **One decoding path:** PNG, JPEG, WebP, BMP, animated GIF, and common video containers (MP4, MKV, WebM, MOV, AVI) all go through FFmpeg.
-- **Rendering modes:** classic luminance ramps, Unicode half-blocks (`▀`) for double vertical resolution, and 24-bit TrueColor foreground/background. Braille, Sobel edge detection, and dithering follow later.
+- **Rendering modes:** classic luminance ramps, Unicode half-blocks (`▀`) for double vertical resolution, Sobel edge-aware ASCII, and 24-bit TrueColor foreground/background. Braille and dithering follow later.
 - **Terminal playback:** flicker-free, PTS-paced playback with `vglyph play`.
 - **Export:** text and ANSI (`.txt`, `.ans`), and rasterized `.png`, `.gif`, `.mp4` using an embedded OFL monospace font or your own `.ttf`.
 - **Desktop GUI:** a lightweight SDL3 + Dear ImGui front end with live preview and non-blocking export.
@@ -36,7 +36,7 @@ vglyph info    clip.mp4
 
 Run `vglyph --help` for every option. Exit codes: `0` success, `1` runtime error, `2` bad usage (including `--frame` past the end), `130` interrupted.
 
-Not available yet: `--mode braille|sobel` and `--dither bayer|floyd` (Phase 5).
+Not available yet: `--mode braille` and `--dither bayer|floyd` (Phase 5).
 
 Known limits: pass `--font` only fonts you trust, because the font parser (`stb_truetype`) does not validate the offsets inside a font file and a crafted one can crash vglyph or make it read memory it should not. Interactive `play` has been run on Linux only; the Windows console code is compiled and smoke-tested in CI but not yet tried by hand. On Linux, arrow keys quit the player (they start with `Esc`). Interrupting an export has likewise been tried on Linux only. If an export is killed and leaves `<output>.vglyph-tmp` behind, delete it before exporting to the same file again.
 

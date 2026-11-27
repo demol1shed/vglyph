@@ -136,15 +136,16 @@ constexpr std::size_t kMaxFontBytes = 16 * 1024 * 1024;
 }
 
 [[nodiscard]] Result<GlyphAtlas> load_atlas(const CliOptions& options) {
+    const std::u32string glyphs = output_glyphs(options.config);
     if (!options.font.has_value()) {
-        return GlyphAtlas::create_default(options.font_px, options.config.charset);
+        return GlyphAtlas::create_default(options.font_px, glyphs);
     }
     const Result<std::vector<std::uint8_t>> font = read_font(*options.font);
     const std::vector<std::uint8_t>* bytes = font.value_if();
     if (bytes == nullptr) {
         return *font.error_if();
     }
-    return GlyphAtlas::create(*bytes, options.font_px, options.config.charset);
+    return GlyphAtlas::create(*bytes, options.font_px, glyphs);
 }
 
 [[nodiscard]] ExportFormat export_format(OutputFormat format) noexcept {
