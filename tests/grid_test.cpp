@@ -185,6 +185,21 @@ VGLYPH_TEST(grid_half_block_doubles_sample_height) {
     VGLYPH_CHECK(g.sample_bytes == 100U * 100U * 3U);
 }
 
+VGLYPH_TEST(grid_braille_samples_two_by_four_pixels_per_cell) {
+    ConvertConfig c;
+    c.render_mode = RenderMode::Braille;
+    const GridSize g = grid_of(100, 100, c);
+    VGLYPH_CHECK(g.cols == 100 && g.rows == 50);
+    VGLYPH_CHECK(g.sample_w == 200 && g.sample_h == 200);
+    VGLYPH_CHECK(g.sample_bytes == 200U * 200U * 3U);
+
+    c.target_cols = 2048;
+    c.target_rows = 1024;
+    const GridSize largest = grid_of(100, 100, c);
+    VGLYPH_CHECK(largest.sample_w == 4096 && largest.sample_h == 4096);
+    VGLYPH_CHECK(largest.sample_bytes == 4096ULL * 4096ULL * 3ULL);
+}
+
 VGLYPH_TEST(grid_row_cap_is_exact) {
     ConvertConfig c;
     c.target_cols = 2048;
