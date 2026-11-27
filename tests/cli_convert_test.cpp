@@ -314,6 +314,28 @@ VGLYPH_TEST(convert_halfblock_uses_the_block_glyph) {
     VGLYPH_CHECK(read_text(out) == row + row);
 }
 
+VGLYPH_TEST(convert_sobel_draws_strokes_the_charset_does_not_hold) {
+    const TempDir dir;
+    VGLYPH_CHECK(dir.ok());
+    const fs::path in = dir.file("step.png");
+    std::vector<std::uint8_t> rgb = solid_rgb(8, 8, kBlack);
+    for (std::size_t i = 0; i < rgb.size(); ++i) {
+        if ((i / 3) % 8 >= 4) {
+            rgb[i] = 255;
+        }
+    }
+    VGLYPH_CHECK(write_png(in, 8, 8, rgb).ok());
+    const fs::path txt = dir.file("out.txt");
+    const fs::path png = dir.file("out.png");
+
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(txt), "-w", "4", "--mode", "sobel",
+                          "--charset", " #"}) == 0);
+    VGLYPH_CHECK(read_text(txt) == " ||#\n ||#\n");
+    // The glyph atlas must hold the strokes too.
+    VGLYPH_CHECK(run_cli({"convert", utf8(in), "-o", utf8(png), "-w", "4", "--mode", "sobel",
+                          "--charset", " #"}) == 0);
+}
+
 VGLYPH_TEST(convert_selects_the_requested_gif_frame) {
     const TempDir dir;
     VGLYPH_CHECK(dir.ok());
