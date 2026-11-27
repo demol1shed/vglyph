@@ -20,6 +20,7 @@ namespace {
 using Bytes = std::vector<std::uint8_t>;
 
 constexpr char32_t kHalfBlock = 0x2580;  // U+2580, numeric to keep the source ASCII
+constexpr char32_t kBraille = 0x2800;    // U+2800, the pattern without dots
 
 bool same(Rgb a, Rgb b) { return a.r == b.r && a.g == b.g && a.b == b.b; }
 
@@ -129,6 +130,36 @@ std::u32string glyphs_of(const AsciiFrame& frame) {
         s += cell.codepoint;
     }
     return s;
+}
+
+ConvertConfig braille_config(ColorMode color) {
+    ConvertConfig c = config4();
+    c.render_mode = RenderMode::Braille;
+    c.color_mode = color;
+    c.bg_color = Rgb{1, 2, 3};
+    return c;
+}
+
+void set_pixel(Bytes& rgb, std::uint32_t width, std::uint32_t x, std::uint32_t y, Rgb color) {
+    const std::size_t at = (static_cast<std::size_t>(y) * width + x) * 3;
+    rgb[at] = color.r;
+    rgb[at + 1] = color.g;
+    rgb[at + 2] = color.b;
+}
+
+// One row of four Braille cells whose first cell has two bright pixels (dots
+// 0x01 and 0x80) among dim blue ones.
+Bytes two_dot_plane() {
+    Bytes rgb = solid(8, 4, Rgb{0, 0, 100});
+    set_pixel(rgb, 8, 0, 0, Rgb{255, 201, 1});
+    set_pixel(rgb, 8, 1, 3, Rgb{255, 255, 255});
+    return rgb;
+}
+
+// First cell of an 8x4 Braille plane.
+Cell braille_cell(const Bytes& rgb, const ConvertConfig& c) {
+    const AsciiFrame out = converted(rgb, 8, 4, c);
+    return out.cells.empty() ? Cell{} : out.cells[0];
 }
 
 }  // namespace
@@ -472,6 +503,105 @@ VGLYPH_TEST(output_glyphs_adds_the_strokes_for_sobel_only) {
     VGLYPH_CHECK(vglyph::output_glyphs(c) == U" #");
     c.render_mode = RenderMode::SobelAscii;
     VGLYPH_CHECK(vglyph::output_glyphs(c) == U" #|-/\\");
+}
+
+VGLYPH_TEST(braille_maps_each_pixel_to_its_dot_bit) {
+    // SPEC 4.3: kBits[row][column] of a 2x4 block.
+    constexpr unsigned kBits[4][2] = {{0x01, 0x08}, {0x02, 0x10}, {0x04, 0x20}, {0x40, 0x80}};
+    const ConvertConfig c = braille_config(ColorMode::Mono);
+    for (std::uint32_t y = 0; y < 4; ++y) {
+        for (std::uint32_t x = 0; x < 2; ++x) {
+            Bytes rgb = solid(8, 4, Rgb{0, 0, 0});
+            set_pixel(rgb, 8, 2 + x, y, Rgb{255, 255, 255});  // in the second cell
+            const AsciiFrame out = converted(rgb, 8, 4, c);
+            VGLYPH_CHECK(out.cols == 4 && out.rows == 1 && out.cells.size() == 4);
+            const std::u32string expected{kBraille, kBraille + kBits[y][x], kBraille, kBraille};
+            VGLYPH_CHECK(glyphs_of(out) == expected);
+        }
+    }
+}
+
+VGLYPH_TEST(braille_places_cells_row_major) {
+    Bytes rgb = solid(8, 8, Rgb{0, 0, 0});
+    set_pixel(rgb, 8, 7, 7, Rgb{255, 255, 255});
+    const AsciiFrame out = converted(rgb, 8, 8, braille_config(ColorMode::Mono));
+    VGLYPH_CHECK(out.cols == 4 && out.rows == 2 && out.cells.size() == 8);
+    for (std::size_t i = 0; i < out.cells.size(); ++i) {
+        VGLYPH_CHECK(out.cells[i].codepoint == (i == 7 ? kBraille + 0x80 : kBraille));
+    }
+}
+
+VGLYPH_TEST(braille_raises_a_dot_at_half_luminance) {
+    const ConvertConfig c = braille_config(ColorMode::Mono);
+    VGLYPH_CHECK(braille_cell(solid(8, 4, Rgb{127, 127, 127}), c).codepoint == kBraille);
+    VGLYPH_CHECK(braille_cell(solid(8, 4, Rgb{128, 128, 128}), c).codepoint == kBraille + 0xFF);
+}
+
+VGLYPH_TEST(braille_colors_average_the_raised_dots) {
+    const Bytes rgb = two_dot_plane();
+    constexpr char32_t kTwoDots = kBraille + 0x81;
+
+    const Cell mono = braille_cell(rgb, braille_config(ColorMode::Mono));
+    VGLYPH_CHECK(same(mono, Cell{kTwoDots, Rgb{255, 255, 255}, Rgb{1, 2, 3}}));
+    const Cell gray = braille_cell(rgb, braille_config(ColorMode::Grayscale));
+    VGLYPH_CHECK(same(gray, Cell{kTwoDots, Rgb{227, 227, 227}, Rgb{1, 2, 3}}));
+    const Cell fg = braille_cell(rgb, braille_config(ColorMode::TrueColorFg));
+    VGLYPH_CHECK(same(fg, Cell{kTwoDots, Rgb{255, 228, 128}, Rgb{1, 2, 3}}));
+    const Cell fgbg = braille_cell(rgb, braille_config(ColorMode::TrueColorFgBg));
+    VGLYPH_CHECK(same(fgbg, Cell{kTwoDots, Rgb{255, 228, 128}, Rgb{64, 57, 32}}));
+}
+
+VGLYPH_TEST(braille_colors_average_the_block_without_dots) {
+    const Bytes rgb = two_rows(8, Rgb{40, 0, 0}, Rgb{0, 0, 80});
+    Bytes block = rgb;
+    block.insert(block.end(), rgb.begin(), rgb.end());  // rows: red, blue, red, blue
+
+    const Cell fg = braille_cell(block, braille_config(ColorMode::TrueColorFg));
+    VGLYPH_CHECK(same(fg, Cell{kBraille, Rgb{20, 0, 40}, Rgb{1, 2, 3}}));
+    const Cell gray = braille_cell(block, braille_config(ColorMode::Grayscale));
+    VGLYPH_CHECK(same(gray, Cell{kBraille, Rgb{7, 7, 7}, Rgb{1, 2, 3}}));
+}
+
+VGLYPH_TEST(braille_invert_flips_the_dots) {
+    ConvertConfig c = braille_config(ColorMode::Grayscale);
+    c.invert = true;
+    Bytes rgb = solid(8, 4, Rgb{0, 0, 0});
+    set_pixel(rgb, 8, 0, 0, Rgb{255, 255, 255});
+    // The seven black pixels are raised, and their inverted luminance is full.
+    VGLYPH_CHECK(same(braille_cell(rgb, c), Cell{kBraille + 0xFE, Rgb{255, 255, 255}, Rgb{1, 2, 3}}));
+}
+
+VGLYPH_TEST(braille_ignores_the_charset) {
+    const Bytes rgb = two_dot_plane();
+    ConvertConfig c = braille_config(ColorMode::TrueColorFg);
+    const AsciiFrame with_default = converted(rgb, 8, 4, c);
+    c.charset = U"ab";
+    VGLYPH_CHECK(same(converted(rgb, 8, 4, c), with_default));
+}
+
+VGLYPH_TEST(braille_checks_the_buffer_against_two_by_four_cells) {
+    const ConvertConfig c = braille_config(ColorMode::Mono);
+    const Rgb black{0, 0, 0};
+    AsciiFrame out;
+    VGLYPH_CHECK(has_code(run(solid(4, 4, black), 4, 4, c, out), ErrorCode::InvalidArgument));
+    VGLYPH_CHECK(has_code(run(Bytes{}, 8, 0, c, out), ErrorCode::InvalidArgument));
+    VGLYPH_CHECK(has_code(run(solid(8, 3, black), 8, 3, c, out), ErrorCode::InvalidArgument));
+    VGLYPH_CHECK(has_code(run(solid(8, 6, black), 8, 6, c, out), ErrorCode::InvalidArgument));
+    VGLYPH_CHECK(has_code(run(solid(8, 4, black), 8, 8, c, out), ErrorCode::InvalidArgument));
+    ConvertConfig rows = c;
+    rows.target_rows = 2;
+    VGLYPH_CHECK(has_code(run(solid(8, 4, black), 8, 4, rows, out), ErrorCode::InvalidArgument));
+    VGLYPH_CHECK(has_code(run(solid(8, 4100, black), 8, 4100, c, out), ErrorCode::LimitExceeded));
+    VGLYPH_CHECK(out.cells.empty() && out.cols == 0 && out.rows == 0);
+
+    VGLYPH_CHECK(run(solid(8, 4096, black), 8, 4096, c, out).ok());
+    VGLYPH_CHECK(out.rows == 1024);
+}
+
+VGLYPH_TEST(output_glyphs_of_braille_is_only_a_space) {
+    ConvertConfig c;
+    c.render_mode = RenderMode::Braille;
+    VGLYPH_CHECK(vglyph::output_glyphs(c) == U" ");
 }
 
 VGLYPH_TEST_MAIN()
