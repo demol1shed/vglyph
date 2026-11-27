@@ -4,7 +4,9 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <numbers>
 #include <string>
+#include <string_view>
 
 #include "checked_math.hpp"
 
@@ -108,6 +110,60 @@ void fill_ascii(const std::uint8_t* rgb, const ConvertConfig& config, const Lut&
     }
 }
 
+// Edge strokes of SobelAscii (SPEC section 4.3).
+constexpr std::u32string_view kStrokes = U"|-/\\";
+// Smallest |G| / 4 that counts as an edge; a black-to-white step scores 1.0.
+constexpr float kSobelThreshold = 0.25f;
+
+// Stroke for a gradient: it runs perpendicular to the gradient angle (y grows downward).
+[[nodiscard]] char32_t stroke(float gx, float gy) noexcept {
+    float degrees = std::atan2(gy, gx) * (180.0f / std::numbers::pi_v<float>);
+    if (degrees < 0.0f) {
+        degrees += 180.0f;
+    }
+    if (degrees >= 22.5f && degrees < 67.5f) {
+        return U'/';
+    }
+    if (degrees >= 67.5f && degrees < 112.5f) {
+        return U'-';
+    }
+    if (degrees >= 112.5f && degrees < 157.5f) {
+        return U'\\';
+    }
+    return U'|';  // around 0 and 180 degrees
+}
+
+// The Ascii frame, with the glyph of every edge cell replaced by a stroke.
+void fill_sobel(const std::uint8_t* rgb, const ConvertConfig& config, const Lut& lut,
+                AsciiFrame& out) noexcept {
+    fill_ascii(rgb, config, lut, out);
+
+    const std::size_t cols = out.cols;
+    const std::size_t rows = out.rows;
+    const auto y_at = [&](std::size_t x, std::size_t y) {
+        return luminance(lut, rgb + (y * cols + x) * 3, config.invert);
+    };
+    Cell* cell = out.cells.data();
+    for (std::size_t y = 0; y < rows; ++y) {
+        // Neighbors outside the plane repeat the nearest pixel inside it.
+        const std::size_t up = y == 0 ? y : y - 1;
+        const std::size_t down = y + 1 == rows ? y : y + 1;
+        for (std::size_t x = 0; x < cols; ++x, ++cell) {
+            const std::size_t left = x == 0 ? x : x - 1;
+            const std::size_t right = x + 1 == cols ? x : x + 1;
+            const float nw = y_at(left, up);
+            const float ne = y_at(right, up);
+            const float sw = y_at(left, down);
+            const float se = y_at(right, down);
+            const float gx = (ne - nw) + 2.0f * (y_at(right, y) - y_at(left, y)) + (se - sw);
+            const float gy = (sw - nw) + 2.0f * (y_at(x, down) - y_at(x, up)) + (se - ne);
+            if (std::sqrt(gx * gx + gy * gy) / 4.0f >= kSobelThreshold) {
+                cell->codepoint = stroke(gx, gy);
+            }
+        }
+    }
+}
+
 // Color of one half-block pixel: `fg` takes the top pixel and `bg` the bottom one.
 [[nodiscard]] Rgb half_color(const std::uint8_t* px, const ConvertConfig& config,
                              const Lut& lut) noexcept {
@@ -169,6 +225,14 @@ Status validate(const ConvertConfig& config) {
         }
     }
     return Status::success();
+}
+
+std::u32string output_glyphs(const ConvertConfig& config) {
+    std::u32string glyphs = config.charset;
+    if (config.render_mode == RenderMode::SobelAscii) {
+        glyphs += kStrokes;
+    }
+    return glyphs;
 }
 
 Result<GridSize> compute_grid(std::uint32_t src_w, std::uint32_t src_h,
@@ -263,10 +327,16 @@ Status convert(std::span<const std::uint8_t> rgb24, std::uint32_t width, std::ui
     out.rows = rows;
 
     const Lut lut = build_lut(config);
-    if (half_block) {
-        fill_half_block(rgb24.data(), config, lut, out);
-    } else {
-        fill_ascii(rgb24.data(), config, lut, out);
+    switch (config.render_mode) {
+        case RenderMode::Ascii:
+            fill_ascii(rgb24.data(), config, lut, out);
+            break;
+        case RenderMode::HalfBlock:
+            fill_half_block(rgb24.data(), config, lut, out);
+            break;
+        case RenderMode::SobelAscii:
+            fill_sobel(rgb24.data(), config, lut, out);
+            break;
     }
     return Status::success();
 }

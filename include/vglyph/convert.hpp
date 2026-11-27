@@ -18,7 +18,7 @@ inline constexpr std::uint32_t kMaxGridRows = 1024;
 inline constexpr std::uint32_t kMaxSourceDim = 16384;
 inline constexpr std::uint64_t kMaxSourcePixels = 67'108'864;  // 64 megapixels
 
-enum class RenderMode { Ascii, HalfBlock };
+enum class RenderMode { Ascii, HalfBlock, SobelAscii };
 enum class ColorMode { Mono, Grayscale, TrueColorFg, TrueColorFgBg };
 enum class DitherMode { None };
 
@@ -45,9 +45,12 @@ struct GridSize {
     std::uint32_t cols = 0;
     std::uint32_t rows = 0;
     std::uint32_t sample_w = 0;    // pixels: cols
-    std::uint32_t sample_h = 0;    // pixels: rows (Ascii) or 2 * rows (HalfBlock)
+    std::uint32_t sample_h = 0;    // pixels: rows, or 2 * rows (HalfBlock)
     std::uint64_t sample_bytes = 0;  // sample_w * sample_h * 3, overflow-checked
 };
+
+// Every glyph the render mode can emit: the set a glyph atlas has to cover.
+[[nodiscard]] std::u32string output_glyphs(const ConvertConfig& config);
 
 // Computes the grid for a source of src_w x src_h pixels. Never crops or
 // shrinks: a grid over the caps fails with LimitExceeded.
@@ -58,7 +61,7 @@ struct GridSize {
 // from compute_grid(), into `out` (SPEC sections 4.2, 4.3).
 //
 // `width` must equal config.target_cols. `height` is the number of grid rows
-// (Ascii) or twice that (HalfBlock, so it must be even); a non-zero
+// (Ascii, SobelAscii) or twice that (HalfBlock, so it must be even); a non-zero
 // config.target_rows must match the resulting row count.
 //
 // On any error `out` is left untouched. On success `out.cells` is resized
